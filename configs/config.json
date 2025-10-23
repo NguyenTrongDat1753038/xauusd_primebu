@@ -1,0 +1,99 @@
+{
+    "mt5_credentials": {
+        "login": 97919483,
+        "password": "K*3rFwVv",
+        "server": "MetaQuotes-Demo"
+    },
+    "strategy": {
+        "active_strategy": "CombinedScalpingStrategy",
+        "CombinedScalpingStrategy": {
+            "ema_strength_threshold": 0.1,
+            "ScalpingEmaCrossoverStrategy": {
+                "ema_fast_len": 9,
+                "ema_slow_len": 20
+            },
+            "ScalpingRsiPullbackStrategy": {
+                "swing_lookback": 10,
+                "rr_ratio": 1.5,
+                "rsi_oversold": 30,
+                "rsi_overbought": 70
+            }
+        },
+        "MultiTimeframeEmaStrategy": {
+            "ema_fast_len": 34,
+            "ema_slow_len": 50,
+            "sr_periods": {
+                "m15": 200,
+                "h1": 50,
+                "h4": 50
+            }
+        },
+        "ScalpingEmaCrossoverStrategy": {
+            "ema_fast_len": 9,
+            "ema_slow_len": 20
+        },
+        "ScalpingRsiPullbackStrategy": {
+            "swing_lookback": 10,
+            "rr_ratio": 1.5,
+            "rsi_oversold": 30,
+            "rsi_overbought": 70
+        },
+        "SupplyDemandStrategy": {
+            "retest_tolerance": 0.002,
+            "confirmation_lookback": 3,
+            "sr_periods": {
+                "m15": 200,
+                "h4": 50,
+                "d1": 50
+            }
+        }
+    },
+    "telegram": {
+        "enabled": true,
+        "bot_token": "8495271991:AAEa6KITp5SRrjjajJORSQdomuqxVaO8lho",
+        "chat_id": "-1002120822708"
+    },
+    "trading": {
+        "risk_percent": 3.0,
+        "initial_balance": 1000,
+        "max_open_trades": 5,
+        "stop_loss_points": 38.0,
+        "take_profit_points": 58.0,
+        "use_breakeven_stop": true,
+        "breakeven_trigger_points": 10.0,
+        "breakeven_extra_points": 0.5,
+        "use_trailing_stop": false,
+        "trailing_trigger_step": 10.0,
+        "trailing_profit_step": 0.5,
+        "use_tiered_trailing_stop": false,
+        "tiered_trailing_stops": [
+            {
+                "trigger": 10,
+                "sl_add": 5
+            },
+            {
+                "trigger": 20,
+                "sl_add": 10
+            },
+            {
+                "trigger": 30,
+                "sl_add": 15
+            },
+            {
+                "trigger": 40,
+                "sl_add": 20
+            },
+            {
+                "trigger": 50,
+                "sl_add": 25
+            }
+        ],
+        "use_tp_extension": false,
+        "tp_extension_trigger_points": 8.0,
+        "tp_extension_factor": 1.2,
+        "tp_extension_sl_target_points": 1.6,
+        "use_candlestick_exit": false,
+        "close_on_friday": true,
+        "friday_close_time": "21:30:00"
+    }
+}
