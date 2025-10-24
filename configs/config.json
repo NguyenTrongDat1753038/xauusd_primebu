@@ -5,7 +5,27 @@
         "server": "MetaQuotes-Demo"
     },
     "strategy": {
-        "active_strategy": "CombinedScalpingStrategy",
+    "active_strategy": "MTF_EMA_M1_Trigger_Strategy",
+        "M15FilteredScalpingStrategy": {
+            "m15_ema_strength_threshold": 0.5,
+            "CombinedScalpingStrategy": {
+                "ema_strength_threshold": 0.1,
+                "ScalpingEmaCrossoverStrategy": {
+                    "ema_fast_len": 9,
+                    "ema_slow_len": 20
+                },
+                "ScalpingRsiPullbackStrategy": {
+                    "swing_lookback": 10,
+                    "rr_ratio": 1.5,
+                    "rsi_oversold": 30,
+                    "rsi_overbought": 70
+                }
+            }
+        },
+        "MTF_EMA_M1_Trigger_Strategy": {
+            "m1_body_size_threshold": 0.5,
+            "m15_ema_separation_threshold": 5.0
+        },
         "CombinedScalpingStrategy": {
             "ema_strength_threshold": 0.1,
             "ScalpingEmaCrossoverStrategy": {
@@ -21,12 +41,17 @@
         },
         "MultiTimeframeEmaStrategy": {
             "ema_fast_len": 34,
-            "ema_slow_len": 50,
+            "ema_slow_len": 89,
             "sr_periods": {
                 "m15": 200,
                 "h1": 50,
                 "h4": 50
             }
+        },
+        "MultiEmaPAStochStrategy": {
+            "sr_retest_tolerance": 0.01,
+            "stoch_oversold": 30,
+            "stoch_overbought": 70
         },
         "ScalpingEmaCrossoverStrategy": {
             "ema_fast_len": 9,

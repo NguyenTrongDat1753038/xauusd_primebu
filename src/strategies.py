@@ -1,3 +1,4 @@
+
 import pandas as pd
 import math
 
@@ -19,7 +20,7 @@ class MultiTimeframeEmaStrategy(BaseStrategy):
 
     def get_signal(self, analyzed_data):
         if len(analyzed_data) < 2:
-            return 0
+            return 0, None, None
             
         latest = analyzed_data.iloc[-1]
 
@@ -45,13 +46,13 @@ class MultiTimeframeEmaStrategy(BaseStrategy):
         # --- 4. Generate Signal ---
         # BUY Signal: All higher TFs are in uptrend, M15 confirms with close > EMA34 and a bullish candle.
         if is_uptrend_aligned and m15_close_above_ema34 and is_bullish_candle:
-            return 1 # BUY
+            return 1, None, None # BUY, SL/TP sẽ được xử lý bởi trading_params
 
         # SELL Signal: All higher TFs are in downtrend, M15 confirms with close < EMA34 and a bearish candle.
         if is_downtrend_aligned and m15_close_below_ema34 and is_bearish_candle:
-            return -1 # SELL
+            return -1, None, None # SELL, SL/TP sẽ được xử lý bởi trading_params
 
-        return 0 # No signal
+        return 0, None, None # No signal
 
 class MultiTimeframeEmaFibStrategy(BaseStrategy):
     """
@@ -89,7 +90,7 @@ class MultiTimeframeEmaFibStrategy(BaseStrategy):
 
     def get_signal(self, analyzed_data):
         if len(analyzed_data) < self.fib_lookback_period:
-            return 0
+            return 0, None, None
 
         latest = analyzed_data.iloc[-1]
 
@@ -110,7 +111,7 @@ class MultiTimeframeEmaFibStrategy(BaseStrategy):
         # --- 3. RSI Filter ---
         current_rsi = latest.get('RSI_14')
         if current_rsi is None or math.isnan(current_rsi): # Ensure RSI is available and valid
-            return 0
+            return 0, None, None
 
         is_rsi_oversold = current_rsi < self.rsi_oversold_threshold
         is_rsi_overbought = current_rsi > self.rsi_overbought_threshold
@@ -128,7 +129,7 @@ class MultiTimeframeEmaFibStrategy(BaseStrategy):
                             confluence_zone_price = (fib_price + sr_support_level) / 2
                             if abs(latest['LOW'] - confluence_zone_price) / confluence_zone_price < self.fib_tolerance:
                                 print(f"BUY Signal Confluence: Fib={fib_price:.2f}, {sr_support_col}={sr_support_level:.2f}, Candle Low={latest['LOW']:.2f}")
-                                return 1 # BUY
+                                return 1, None, None # BUY
 
         if is_downtrend_aligned and is_bearish_candle and is_rsi_overbought: # Added RSI filter
             fib_resistances = self._calculate_fib_levels(analyzed_data.iloc[:-1], trend_direction=-1)
@@ -142,9 +143,9 @@ class MultiTimeframeEmaFibStrategy(BaseStrategy):
                             confluence_zone_price = (fib_price + sr_resistance_level) / 2
                             if abs(latest['HIGH'] - confluence_zone_price) / confluence_zone_price < self.fib_tolerance:
                                 print(f"SELL Signal Confluence: Fib={fib_price:.2f}, {sr_resistance_col}={sr_resistance_level:.2f}, Candle High={latest['HIGH']:.2f}")
-                                return -1 # SELL
+                                return -1, None, None # SELL
 
-        return 0 # No signal
+        return 0, None, None # No signal
 
 class PriceActionSRStrategy(BaseStrategy):
     """
@@ -331,7 +332,7 @@ class SupplyDemandStrategy(BaseStrategy):
 
     def get_signal(self, analyzed_data):
         if len(analyzed_data) < self.confirmation_lookback:
-            return 0
+            return 0, None, None
 
         latest = analyzed_data.iloc[-1]
 
@@ -360,7 +361,7 @@ class SupplyDemandStrategy(BaseStrategy):
             if is_bullish_candle:
                 print(f"Tín hiệu MUA: Giá retest Vùng Cầu tại ~{nearest_demand_level:.2f}")
                 self.demand_retested_in_last_x_bars = 0 # Reset trạng thái sau khi vào lệnh
-                return 1 # BUY
+                return 1, None, None # BUY
 
         # Tín hiệu BÁN: Đã retest Vùng Cung trong X nến gần đây VÀ nến hiện tại là nến xác nhận giảm
         if self.supply_retested_in_last_x_bars > 0:
@@ -368,6 +369,118 @@ class SupplyDemandStrategy(BaseStrategy):
             if is_bearish_candle:
                 print(f"Tín hiệu BÁN: Giá retest Vùng Cung tại ~{nearest_supply_level:.2f}")
                 self.supply_retested_in_last_x_bars = 0 # Reset trạng thái sau khi vào lệnh
-                return -1 # SELL
+                return -1, None, None # SELL
 
-        return 0 # Không có tín hiệu
+        return 0, None, None # Không có tín hiệu
+
+class MultiEmaPAStochStrategy(BaseStrategy):
+    """
+    A confluence strategy that uses EMAs for trend, S/R zones for value,
+    and Stochastic for entry timing.
+    - M15 Trend: EMA 34 vs EMA 89
+    - H1 Trend: Price vs EMA 200
+    - Entry Zone: Reaction to S/R levels
+    - Entry Trigger: Stochastic Oscillator
+    """
+    def __init__(self, params):
+        super().__init__(params)
+        # Strategy parameters with defaults
+        self.sr_retest_tolerance = params.get('sr_retest_tolerance', 0.001) # 0.1% tolerance for S/R retest
+        self.stoch_oversold = params.get('stoch_oversold', 30)
+        self.stoch_overbought = params.get('stoch_overbought', 70)
+        # Note: The analysis script provides STOCHk_14_3_3 and STOCHd_14_3_3. We use these.
+        self.stoch_k_col = 'STOCHk_14_3_3'
+        self.stoch_d_col = 'STOCHd_14_3_3'
+        
+        # Parameters for SL/TP calculation
+        self.swing_lookback_sl = params.get('swing_lookback_sl', 10)
+        self.rr_ratio = params.get('rr_ratio', 2.0) # Default Risk/Reward ratio of 2
+
+        # State variables to track setups
+        self.setup_lookback = params.get('setup_lookback', 3) # Look for a setup in the last 3 candles
+        self.buy_setup_active = False
+        self.sell_setup_active = False
+
+    def get_signal(self, analyzed_data: pd.DataFrame):
+        if len(analyzed_data) < 2:
+            return 0, None, None
+    
+        latest = analyzed_data.iloc[-1]
+        previous = analyzed_data.iloc[-2]
+
+        # --- 1. Trend Filter (EMA) ---
+        m15_ema34 = latest.get('EMA_34')
+        m15_ema89 = latest.get('EMA_89')
+        h1_trend = latest.get('H1_TREND', 0)
+    
+        # --- 2. Stochastic Filter ---
+        stoch_k_latest = latest.get(self.stoch_k_col)
+        stoch_d_latest = latest.get(self.stoch_d_col)
+        stoch_k_previous = previous.get(self.stoch_k_col)
+        stoch_d_previous = previous.get(self.stoch_d_col)
+    
+        if any(pd.isna(v) for v in [m15_ema34, m15_ema89, stoch_k_latest, stoch_d_latest, stoch_k_previous, stoch_d_previous]):
+            return 0, None, None # Not enough data
+    
+        is_uptrend = (m15_ema34 > m15_ema89) and (h1_trend == 1)
+        is_downtrend = (m15_ema34 < m15_ema89) and (h1_trend == -1)
+    
+        # Stochastic crossover conditions
+        stoch_bullish_crossover = stoch_k_previous < stoch_d_previous and stoch_k_latest > stoch_d_latest
+        stoch_bearish_crossover = stoch_k_previous > stoch_d_previous and stoch_k_latest < stoch_d_latest
+    
+        # --- 3. Setup Confirmation: Look for S/R reaction in recent past ---
+        self.buy_setup_active = False
+        self.sell_setup_active = False
+
+        # Check for a setup within the last `setup_lookback` candles
+        for i in range(1, self.setup_lookback + 1):
+            if len(analyzed_data) <= i: break
+            bar = analyzed_data.iloc[-i]
+
+            if is_uptrend:
+                support_levels = [bar.get(s) for s in ['M15_S', 'H1_S', 'H4_S'] if bar.get(s) and not pd.isna(bar.get(s))]
+                for support in support_levels:
+                    if abs(bar['LOW'] - support) / support < self.sr_retest_tolerance:
+                        self.buy_setup_active = True
+                        break
+            
+            if is_downtrend:
+                resistance_levels = [bar.get(r) for r in ['M15_R', 'H1_R', 'H4_R'] if bar.get(r) and not pd.isna(bar.get(r))]
+                for resistance in resistance_levels:
+                    if abs(bar['HIGH'] - resistance) / resistance < self.sr_retest_tolerance:
+                        self.sell_setup_active = True
+                        break
+            
+            if self.buy_setup_active or self.sell_setup_active:
+                break # Found a setup, no need to look further back
+
+        # --- 4. Trigger Signal: Stochastic Crossover + Price Action on the latest candle ---
+        bullish_patterns = ['CDL_HAMMER', 'CDL_INVERTEDHAMMER', 'CDL_ENGULFING', 'CDL_PIERCING', 'CDL_MORNINGSTAR']
+        bearish_patterns = ['CDL_HANGINGMAN', 'CDL_SHOOTINGSTAR', 'CDL_ENGULFING', 'CDL_EVENINGSTAR']
+        
+        # BUY Signal: Uptrend + Recent S/R Bounce Setup + Stochastic Oversold Crossover + Bullish PA
+        if self.buy_setup_active and stoch_k_latest < self.stoch_oversold and stoch_bullish_crossover:
+            if any(latest.get(p, 0) > 0 for p in bullish_patterns):
+                print(f"BUY Signal: Setup Confirmed, Stoch Cross ({stoch_k_latest:.1f}) with Bullish PA")
+                # Calculate SL/TP
+                entry_price = latest['CLOSE']
+                recent_low = analyzed_data['LOW'].iloc[-self.swing_lookback_sl:].min() # Correctly find recent low
+                stop_loss = recent_low - 0.2 # SL is BELOW the recent low
+                sl_distance = entry_price - stop_loss
+                take_profit = entry_price + (sl_distance * self.rr_ratio)
+                return 1, stop_loss, take_profit # Return correct values
+
+        # SELL Signal: Downtrend + Recent S/R Bounce Setup + Stochastic Overbought Crossover + Bearish PA
+        if self.sell_setup_active and stoch_k_latest > self.stoch_overbought and stoch_bearish_crossover:
+            if any(latest.get(p, 0) < 0 for p in bearish_patterns):
+                print(f"SELL Signal: Setup Confirmed, Stoch Cross ({stoch_k_latest:.1f}) with Bearish PA")
+                # Calculate SL/TP
+                entry_price = latest['CLOSE']
+                recent_high = analyzed_data['HIGH'].iloc[-self.swing_lookback_sl:].max() # Correctly find recent high
+                stop_loss = recent_high + 0.2 # SL is ABOVE the recent high
+                sl_distance = stop_loss - entry_price
+                take_profit = entry_price - (sl_distance * self.rr_ratio)
+                return -1, stop_loss, take_profit # Return correct values
+    
+        return 0, None, None # No signal

@@ -1,5 +1,6 @@
 pandas
 pandas-ta
-scikit-learn
-xgboost
-scipy
+numpy
+mplfinance
+MetaTrader5
+python-telegram-bot

@@ -125,7 +125,14 @@ def place_order(symbol, lot, trade_type, sl_value, tp_value, notifier=None):
         if notifier: notifier.send_message(f"<b>[LỖI] Đặt lệnh {trade_type} {symbol} thất bại!</b>\nLỗi: {result.comment}")
         return False
     
-    print(f"+++ Đặt lệnh {trade_type} thành công cho {symbol} | Giá: {result.price:.2f} | SL: {sl:.2f} | TP: {tp:.2f} +++")
+    print("--- LỆNH MỚI ĐƯỢC ĐẶT ---")
+    print(f"  - Symbol: {symbol}")
+    print(f"  - Loại: {trade_type}")
+    print(f"  - Volume: {lot:.2f} lots")
+    print(f"  - Giá vào: {result.price:.2f}")
+    print(f"  - Stop Loss: {sl:.2f}")
+    print(f"  - Take Profit: {tp:.2f}")
+    print("--------------------------")
     if notifier: notifier.send_message(f"<b>[LỆNH MỚI] {trade_type} {symbol}</b>\nLot: {lot}\nGiá vào: {result.price:.2f}\nSL: {sl:.2f}\nTP: {tp:.2f}")
     return True
 
@@ -237,7 +244,7 @@ def calculate_lot_size(symbol, sl_points, risk_percent):
     
     final_lot_size = max(min_lot, min(rounded_lot_size, max_lot))
     
-    print(f"Tính toán Lot Size: Balance={balance:.2f}, Risk={risk_percent}%, Risk Amount=${risk_amount:.2f}, Loss/Lot=${loss_per_lot:.2f}, Calculated Lot={lot_size:.4f}, Final Lot={final_lot_size:.2f}")
+    print(f"Tính toán Lot Size: Balance={balance:.2f}, Risk={risk_percent}%, Risk Amount=${risk_amount:.2f}, SL Distance={sl_points:.2f}, Loss/Lot=${loss_per_lot:.2f}, Calculated Lot={lot_size:.4f}, Final Lot={final_lot_size:.2f}")
     return final_lot_size
 
 if __name__ == '__main__':

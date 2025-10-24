@@ -8,8 +8,10 @@ import signal
 # Import các hàm cần thiết, bao gồm cả hàm sửa và đóng lệnh
 from mt5_connector import connect_to_mt5, get_mt5_data, calculate_lot_size, place_order, modify_position_sltp, close_position
 from analysis import prepare_analysis_data, prepare_scalping_data # Import cả hai hàm chuẩn bị dữ liệu
-from strategies import MultiTimeframeEmaStrategy, ScalpingEmaCrossoverStrategy, SupplyDemandStrategy # Import các chiến lược riêng lẻ
+from strategies import MultiTimeframeEmaStrategy, ScalpingEmaCrossoverStrategy, SupplyDemandStrategy, PriceActionSRStrategy, MultiEmaPAStochStrategy
+from mtf_ema_m1_trigger_strategy import MTF_EMA_M1_Trigger_Strategy # Import chiến lược mới
 from combined_strategy import CombinedScalpingStrategy # Import chiến lược kết hợp mới
+from m15_filtered_scalping_strategy import M15FilteredScalpingStrategy
 from config_manager import get_config
 from telegram_notifier import TelegramNotifier
 
@@ -23,6 +25,7 @@ def shutdown_handler(signum, frame):
     print("\n[!] Đã nhận tín hiệu tắt. Đang đóng các tiến trình..." )
     if telegram_notifier:
         telegram_notifier.send_message("<b>[BOT] Bot đang tắt!</b>")
+        telegram_notifier.stop() # Dừng luồng Telegram một cách an toàn
     mt5.shutdown()
     print("[*] Đã ngắt kết nối khỏi MetaTrader 5. Tạm biệt!")
     sys.exit(0) # Đảm bảo thoát hoàn toàn
@@ -159,6 +162,22 @@ def main_trader_loop():
         prepare_data_func = prepare_scalping_data
         main_timeframe_minutes = 5
         required_tfs_for_data = {'m1': mt5.TIMEFRAME_M1, 'm5': mt5.TIMEFRAME_M5, 'm15': mt5.TIMEFRAME_M15}
+    elif active_strategy_name == 'M15FilteredScalpingStrategy':
+        strategy = M15FilteredScalpingStrategy(specific_strategy_params)
+        prepare_data_func = prepare_scalping_data # Sử dụng dữ liệu scalping
+        main_timeframe_minutes = 1 # Vòng lặp chính sẽ chạy nhanh hơn
+        required_tfs_for_data = {'m1': mt5.TIMEFRAME_M1, 'm5': mt5.TIMEFRAME_M5, 'm15': mt5.TIMEFRAME_M15}
+    elif active_strategy_name == 'MTF_EMA_M1_Trigger_Strategy':
+        strategy = MTF_EMA_M1_Trigger_Strategy(specific_strategy_params)
+        # Sử dụng dữ liệu scalping vì nó chứa dữ liệu M1 làm cơ sở và các chỉ báo từ khung cao hơn
+        prepare_data_func = prepare_scalping_data
+        main_timeframe_minutes = 1 # Chạy trên vòng lặp nhanh
+        required_tfs_for_data = {'m1': mt5.TIMEFRAME_M1, 'm5': mt5.TIMEFRAME_M5, 'm15': mt5.TIMEFRAME_M15, 'm30': mt5.TIMEFRAME_M30, 'h1': mt5.TIMEFRAME_H1}
+    elif active_strategy_name == 'PriceActionSRStrategy':
+        strategy = PriceActionSRStrategy(specific_strategy_params)
+        prepare_data_func = prepare_analysis_data
+        main_timeframe_minutes = 15
+        required_tfs_for_data = {'m15': mt5.TIMEFRAME_M15, 'm30': mt5.TIMEFRAME_M30, 'h1': mt5.TIMEFRAME_H1, 'h4': mt5.TIMEFRAME_H4}
 
     else:
         print(f"Lỗi: Chiến thuật '{active_strategy_name}' không được hỗ trợ. Bot sẽ dừng lại.")
@@ -279,15 +298,22 @@ def main_trader_loop():
             else:
                 print("Không có tín hiệu mới.")
                 # if telegram_notifier: telegram_notifier.send_message(f"[{datetime.datetime.now().strftime('%H:%M')}] Không có tín hiệu mới.") # Có thể quá nhiều tin nhắn
-            now = datetime.datetime.now(datetime.UTC)
-            next_candle_minute = (now.minute // main_timeframe_minutes + 1) * main_timeframe_minutes
-            if next_candle_minute >= 60:
-                next_candle_time = now.replace(hour=now.hour + 1, minute=0, second=5, microsecond=0)
+            
+            # Logic ngủ mới: Nếu là chiến lược scalping, chạy nhanh hơn. Nếu không, chờ nến tiếp theo.
+            if "Scalping" in active_strategy_name or "M1_Trigger" in active_strategy_name:
+                sleep_seconds = 10 # Quét mỗi 10 giây cho scalping
+                print(f"Chế độ Scalping. Chờ {sleep_seconds} giây...")
             else:
-                next_candle_time = now.replace(minute=next_candle_minute, second=5, microsecond=0)
-            sleep_seconds = (next_candle_time - now).total_seconds()
-            print(f"Chờ {sleep_seconds:.0f} giây đến nến tiếp theo (chu kỳ {main_timeframe_minutes} phút)...")
-            time.sleep(max(int(sleep_seconds), 1))
+                now = datetime.datetime.now(datetime.UTC)
+                next_candle_minute = (now.minute // main_timeframe_minutes + 1) * main_timeframe_minutes
+                if next_candle_minute >= 60:
+                    next_candle_time = now.replace(hour=now.hour + 1, minute=0, second=5, microsecond=0)
+                else:
+                    next_candle_time = now.replace(minute=next_candle_minute, second=5, microsecond=0)
+                sleep_seconds = (next_candle_time - now).total_seconds()
+                print(f"Chờ {sleep_seconds:.0f} giây đến nến tiếp theo (chu kỳ {main_timeframe_minutes} phút)...")
+            
+            time.sleep(max(int(sleep_seconds), 5))
 
         except Exception as e:
             if telegram_notifier:

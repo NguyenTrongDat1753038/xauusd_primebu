@@ -218,12 +218,34 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
     print("Đang tính xu hướng trên M15...")
     m15_df.columns = [col.lower() for col in m15_df.columns]
     m15_ema_200 = ta.ema(m15_df['close'], length=200)
+    # Add M15 EMA 34 and 89 for the new strategy
+    m15_df['M15_EMA_34'] = ta.ema(m15_df['close'], length=34)
+    m15_df['M15_EMA_89'] = ta.ema(m15_df['close'], length=89)
+
     # Sửa lỗi logic: So sánh giá đóng cửa của mỗi nến với giá trị EMA tương ứng
     # thay vì so sánh với giá đóng cửa cuối cùng.
     m15_df['M15_TREND_EMA200'] = np.where(m15_df['close'] > m15_ema_200, 1, -1)
     # Xử lý các giá trị NaN ở đầu
     m15_df['M15_TREND_EMA200'] = m15_df['M15_TREND_EMA200'].fillna(0)
-    m15_trend = m15_df[['M15_TREND_EMA200']].resample('1min').ffill()
+    # Resample all necessary M15 indicators
+    m15_indicators_resampled = m15_df[['M15_TREND_EMA200', 'M15_EMA_34', 'M15_EMA_89']].resample('1min').ffill()
+    
+    # --- Thêm chỉ báo xu hướng từ H1 và M30 ---
+    all_htf_features = [m15_indicators_resampled]
+    
+    if 'h1' in timeframes_data:
+        print("Đang tính xu hướng trên H1...")
+        h1_df = timeframes_data['h1'].copy()
+        h1_df.columns = [col.lower() for col in h1_df.columns]
+        h1_df['H1_TREND'] = np.where(h1_df['close'] > ta.ema(h1_df['close'], length=200), 1, -1)
+        all_htf_features.append(h1_df[['H1_TREND']].resample('1min').ffill())
+
+    if 'm30' in timeframes_data:
+        print("Đang tính xu hướng trên M30...")
+        m30_df = timeframes_data['m30'].copy()
+        m30_df.columns = [col.lower() for col in m30_df.columns]
+        m30_df['M30_TREND'] = np.where(m30_df['close'] > ta.ema(m30_df['close'], length=200), 1, -1)
+        all_htf_features.append(m30_df[['M30_TREND']].resample('1min').ffill())
 
     # --- 2. Tính toán các chỉ báo trên M5 ---
     print("Đang tính các chỉ báo EMA trên M5...")
@@ -245,7 +267,7 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
     # Đảm bảo các cột của m1_df là chữ hoa để nhất quán
     m1_df.columns = [col.upper() for col in m1_df.columns]
     
-    merged_df = pd.concat([m1_df, m15_trend, m5_indicators], axis=1)
+    merged_df = pd.concat([m1_df] + all_htf_features + [m5_indicators], axis=1)
 
     # --- 4. Dọn dẹp dữ liệu ---
     merged_df.ffill(inplace=True)
