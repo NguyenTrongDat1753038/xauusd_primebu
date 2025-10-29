@@ -1,30 +1,31 @@
 {
     "mt5_credentials": {
-        "login": 97919483,
-        "password": "K*3rFwVv",
-        "server": "MetaQuotes-Demo"
+        "login": 272716800,
+        "password": "Trongdat99@",
+        "server": "Exness-MT5Trial14"
     },
     "strategy": {
-    "active_strategy": "MTF_EMA_M1_Trigger_Strategy",
+    "active_strategy": "M15FilteredScalpingStrategy",
         "M15FilteredScalpingStrategy": {
             "m15_ema_strength_threshold": 0.5,
-            "CombinedScalpingStrategy": {
-                "ema_strength_threshold": 0.1,
-                "ScalpingEmaCrossoverStrategy": {
-                    "ema_fast_len": 9,
-                    "ema_slow_len": 20
-                },
-                "ScalpingRsiPullbackStrategy": {
-                    "swing_lookback": 10,
-                    "rr_ratio": 1.5,
-                    "rsi_oversold": 30,
-                    "rsi_overbought": 70
-                }
+            "required_votes": 1,
+            "ScalpingEmaCrossoverStrategy": {
+                "ema_fast_len": 9,
+                "ema_slow_len": 20,
+                "swing_lookback": 10,
+                "rr_ratio": 1.5
+            },
+            "ScalpingRsiPullbackStrategy": {
+                "rsi_oversold": 35,
+                "rsi_overbought": 65,
+                "swing_lookback": 10,
+                "rr_ratio": 1.5
             }
         },
         "MTF_EMA_M1_Trigger_Strategy": {
-            "m1_body_size_threshold": 0.5,
-            "m15_ema_separation_threshold": 5.0
+            "m1_body_size_threshold": 0.5,             // Ngưỡng kích thước thân nến M1 để kích hoạt
+            "m15_ema_separation_threshold": 5.0,       // Khoảng cách tối đa giữa giá và M15 EMA 89 cho context M15 truyền thống
+            "h1_resistance_tolerance": 1.0             // Khoảng cách tối đa từ H1 EMA 89 để coi là chạm kháng cự
         },
         "CombinedScalpingStrategy": {
             "ema_strength_threshold": 0.1,
@@ -35,8 +36,8 @@
             "ScalpingRsiPullbackStrategy": {
                 "swing_lookback": 10,
                 "rr_ratio": 1.5,
-                "rsi_oversold": 30,
-                "rsi_overbought": 70
+                "rsi_oversold": 35,
+                "rsi_overbought": 65
             }
         },
         "MultiTimeframeEmaStrategy": {
@@ -60,8 +61,8 @@
         "ScalpingRsiPullbackStrategy": {
             "swing_lookback": 10,
             "rr_ratio": 1.5,
-            "rsi_oversold": 30,
-            "rsi_overbought": 70
+            "rsi_oversold": 35,
+            "rsi_overbought": 65
         },
         "SupplyDemandStrategy": {
             "retest_tolerance": 0.002,
@@ -80,16 +81,14 @@
     },
     "trading": {
         "risk_percent": 3.0,
-        "initial_balance": 1000,
-        "max_open_trades": 5,
-        "stop_loss_points": 38.0,
-        "take_profit_points": 58.0,
-        "use_breakeven_stop": true,
+        "initial_balance": 10000,
+        "max_open_trades": 4,
+        "use_breakeven_stop": false,
         "breakeven_trigger_points": 10.0,
         "breakeven_extra_points": 0.5,
-        "use_trailing_stop": false,
+        "use_trailing_stop": true,
         "trailing_trigger_step": 10.0,
-        "trailing_profit_step": 0.5,
+        "trailing_profit_step": 5.0,
         "use_tiered_trailing_stop": false,
         "tiered_trailing_stops": [
             {
@@ -119,6 +118,7 @@
         "tp_extension_sl_target_points": 1.6,
         "use_candlestick_exit": false,
         "close_on_friday": true,
-        "friday_close_time": "21:30:00"
+        "friday_close_time": "21:30:00",
+        "symbol": "XAUUSDm"
     }
 }

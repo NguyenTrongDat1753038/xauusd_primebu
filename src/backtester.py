@@ -13,11 +13,21 @@ class Backtester:
         self.stop_loss_points = trading_params.get('stop_loss_points', 5.0)
         self.take_profit_points = trading_params.get('take_profit_points', 10.0)
         self.max_open_trades = trading_params.get('max_open_trades', 3)
+
+        # Position Sizing
+        self.use_dynamic_sizing = trading_params.get('use_dynamic_sizing', False)
+        self.risk_per_trade = trading_params.get('risk_per_trade', 0.01) # 1% of balance
+        self.contract_size = trading_params.get('contract_size', 1.0) # e.g., 100 for XAUUSD, 100000 for EURUSD
         
         # Breakeven Stop
         self.use_breakeven_stop = trading_params.get('use_breakeven_stop', False)
         self.be_trigger = trading_params.get('breakeven_trigger_points', 5.0)
         self.be_extra = trading_params.get('breakeven_extra_points', 1.0)
+
+        # Trailing Stop (Linear)
+        self.use_trailing_stop = trading_params.get('use_trailing_stop', False)
+        self.trailing_trigger_step = trading_params.get('trailing_trigger_step', 5.0)
+        self.trailing_profit_step = trading_params.get('trailing_profit_step', 1.0)
 
         # Trailing Stop (Linear)
         self.use_trailing_stop = trading_params.get('use_trailing_stop', False)
@@ -102,6 +112,7 @@ class Backtester:
     def _open_trade(self, signal, current_bar, dynamic_sl=None, dynamic_tp=None):
         entry_price = current_bar['CLOSE']
         
+        # Determine initial Stop Loss based on signal and dynamic/fixed values
         if signal == 1: # BUY
             stop_loss = dynamic_sl if dynamic_sl is not None else entry_price - self.stop_loss_points
             take_profit = dynamic_tp if dynamic_tp is not None else entry_price + self.take_profit_points
@@ -109,7 +120,25 @@ class Backtester:
             stop_loss = dynamic_sl if dynamic_sl is not None else entry_price + self.stop_loss_points
             take_profit = dynamic_tp if dynamic_tp is not None else entry_price - self.take_profit_points
 
-        if take_profit == entry_price:
+        if take_profit == entry_price: # Avoid trades with zero TP
+            return
+
+        # Calculate position size (lot size)
+        position_size = 0.0 # Default to 0, will be updated
+        if self.use_dynamic_sizing:
+            sl_distance_points = abs(entry_price - stop_loss)
+            if sl_distance_points == 0: # Avoid division by zero
+                print("Warning: SL distance is zero, cannot calculate dynamic lot size. Skipping trade.")
+                return
+            risk_amount = self.balance * self.risk_per_trade
+            # Calculate lot size based on risk amount, SL distance, and contract size
+            position_size = risk_amount / (sl_distance_points * self.contract_size)
+            # Simple rounding for now, could add lot step logic if needed
+            position_size = round(position_size, 2) # Round to 2 decimal places for lots
+
+        # Ensure position size is not zero or negative
+        if position_size <= 0:
+            print("Warning: Calculated position size is zero or negative. Skipping trade.")
             return
 
         trade = {
@@ -117,6 +146,7 @@ class Backtester:
             'entry_price': entry_price,
             'stop_loss': stop_loss,
             'take_profit': take_profit,
+            'position_size': position_size, # Store calculated position size
             'initial_tp': take_profit, # Store for extension calculation
             'entry_time': current_bar.name,
             'status': 'open',
@@ -125,6 +155,12 @@ class Backtester:
             'trailing_steps': 0 # Initialize trailing stop counter
         }
         self.open_trades.append(trade)
+
+    def _check_open_trades_old(self, current_slice):
+        # This method should only manage existing open trades.
+        # Lot size calculation should happen in _open_trade.
+        # The previous code block for position_size calculation was misplaced here.
+        pass
 
     def _check_open_trades(self, current_slice):
         current_bar = current_slice.iloc[-1] # Get the latest bar for price checks
@@ -135,7 +171,6 @@ class Backtester:
                 current_profit = current_bar['HIGH'] - trade['entry_price']
                 
                 # NOTE: The order of these checks matters. Choose one primary stop-loss management strategy.
-
                 # Tiered Trailing Stop (Advanced)
                 if self.use_tiered_trailing_stop:
                     for tier in self.tiered_trailing_stops:
@@ -241,8 +276,11 @@ class Backtester:
             pnl = trade['exit_price'] - trade['entry_price']
         else: # SELL
             pnl = trade['entry_price'] - trade['exit_price']
+        
+        pnl_currency = pnl * trade.get('position_size', 0) * self.contract_size # Calculate monetary PnL
             
         trade['pnl'] = pnl # PnL in points
+        trade['pnl_currency'] = pnl_currency
         trade['exit_reason'] = reason
         self.trades.append(trade)
 
@@ -253,19 +291,24 @@ class Backtester:
             return
 
         report_df = pd.DataFrame(self.trades)
-        total_trades = len(report_df)
-        wins = report_df[report_df['pnl'] > 0]
-        losses = report_df[report_df['pnl'] <= 0]
+        total_trades = len(report_df) # Total trades executed
+        wins = report_df[report_df['pnl_currency'] > 0] # Winning trades based on currency PnL
+        losses = report_df[report_df['pnl_currency'] <= 0] # Losing trades based on currency PnL
         
         win_rate = (len(wins) / total_trades) * 100 if total_trades > 0 else 0
-        total_pnl = report_df['pnl'].sum()
+        total_pnl_points = report_df['pnl'].sum() # Sum of PnL in points
+        total_pnl_currency = report_df['pnl_currency'].sum() # Sum of PnL in currency
+
+        final_balance = self.initial_balance + total_pnl_currency # Final balance
 
         print(f"Initial Balance: ${self.initial_balance:.2f}")
         print(f"Total Trades: {total_trades}")
         print(f"Winning Trades: {len(wins)}")
         print(f"Losing Trades: {len(losses)}")
         print(f"Win Rate: {win_rate:.2f}%")
-        print(f"Total PnL (points): {total_pnl:.2f}")
+        print(f"Total PnL (points): {total_pnl_points:.2f}")
+        print(f"Total PnL (currency): ${total_pnl_currency:.2f}")
+        print(f"Final Balance: ${final_balance:.2f}")
 
         # --- Exit Reason Analysis ---
         if 'exit_reason' in report_df.columns:
@@ -276,11 +319,13 @@ class Backtester:
     def get_results(self):
         """Returns a dictionary of the backtest results."""
         if not self.trades:
-            return {'total_trades': 0, 'win_rate': 0, 'total_pnl_points': 0}
+            return {'total_trades': 0, 'win_rate': 0, 'total_pnl_points': 0, 'total_pnl_currency': 0, 'final_balance': self.initial_balance}
         
         report_df = pd.DataFrame(self.trades)
-        win_rate = (len(report_df[report_df['pnl'] > 0]) / len(report_df)) * 100 if len(report_df) > 0 else 0
-        return {'total_trades': len(report_df), 'win_rate': win_rate, 'total_pnl_points': report_df['pnl'].sum()}
+        win_rate = (len(report_df[report_df['pnl_currency'] > 0]) / len(report_df)) * 100 if len(report_df) > 0 else 0
+        total_pnl_currency = report_df['pnl_currency'].sum()
+        final_balance = self.initial_balance + total_pnl_currency
+        return {'total_trades': len(report_df), 'win_rate': win_rate, 'total_pnl_points': report_df['pnl'].sum(), 'total_pnl_currency': total_pnl_currency, 'final_balance': final_balance}
 
     def save_report_to_csv(self, filename):
         """Saves the detailed trade log to a CSV file."""

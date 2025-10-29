@@ -14,6 +14,14 @@ def add_m15_indicators(df):
     df_copy.ta.rsi(length=14, append=True)
     df_copy.ta.stoch(append=True)
     df_copy.ta.macd(append=True)
+    df_copy.ta.adx(append=True)
+    df_copy.ta.atr(append=True) # This creates 'ATRr_14'
+
+    # Add SMA of ATR for volatility filter
+    # Ensure the ATR column exists before trying to calculate its SMA
+    if 'ATRr_14' in df_copy.columns:
+        df_copy['ATRr_14_SMA_50'] = ta.sma(df_copy['ATRr_14'], length=50)
+
     emas = [34, 36, 50, 89, 200]
     for ema in emas:
         df_copy.ta.ema(length=ema, append=True)
@@ -252,8 +260,9 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
     m5_df.columns = [col.lower() for col in m5_df.columns]
     
     # Lấy tham số EMA từ config, nếu không có thì dùng mặc định
-    ema_fast_len = strategy_params.get('ema_fast_len', 9) if strategy_params else 9
-    ema_slow_len = strategy_params.get('ema_slow_len', 20) if strategy_params else 20
+    ema_params = strategy_params.get('ScalpingEmaCrossoverStrategy', {})
+    ema_fast_len = ema_params.get('ema_fast_len', 9)
+    ema_slow_len = ema_params.get('ema_slow_len', 20)
     
     # Tính toán cả EMA và RSI
     m5_df.ta.ema(length=ema_fast_len, append=True, col_names=(f'M5_EMA_{ema_fast_len}',))

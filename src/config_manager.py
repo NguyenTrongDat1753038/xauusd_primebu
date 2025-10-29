@@ -1,6 +1,7 @@
 
 import json
 import os
+import re
 
 def get_config():
     """
@@ -14,8 +15,12 @@ def get_config():
     config_path = os.path.join(os.path.dirname(__file__), '..', 'configs', 'config.json')
     
     try:
-        with open(config_path, 'r') as f:
-            config = json.load(f)
+        with open(config_path, 'r', encoding='utf-8') as f:
+            # Read the file and remove comments before parsing
+            content = f.read()
+            # Remove all C-style comments (// and /* */)
+            content = re.sub(r'//.*?\n|/\*.*?\*/', '', content, flags=re.S)
+            config = json.loads(content)
         return config
     except FileNotFoundError:
         print(f"Error: Configuration file not found at {config_path}")

@@ -2,10 +2,16 @@ import MetaTrader5 as mt5
 import pandas as pd
 import datetime
 import sys
+import time
 
 # Fix Unicode errors on Windows
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
+
+# Biến toàn cục để lưu trữ thông tin đăng nhập cho việc kết nối lại tự động
+_login_credentials = {
+    "login": None, "password": None, "server": None
+}
 
 def connect_to_mt5(login, password, server):
     """
@@ -19,6 +25,12 @@ def connect_to_mt5(login, password, server):
     Returns:
         bool: True nếu kết nối thành công, False nếu ngược lại.
     """
+    global _login_credentials
+    # Lưu thông tin đăng nhập để có thể sử dụng cho việc kết nối lại
+    _login_credentials["login"] = login
+    _login_credentials["password"] = password
+    _login_credentials["server"] = server
+
     if not mt5.initialize():
         print(f"Lỗi khởi tạo MT5: {mt5.last_error()}")
         return False
@@ -33,23 +45,96 @@ def connect_to_mt5(login, password, server):
     print(f"Đã kết nối thành công đến tài khoản #{login} trên máy chủ {server}")
     return True
 
-def get_mt5_data(symbol, timeframe, num_bars):
+def _ensure_mt5_connection():
     """
-    Lấy dữ liệu lịch sử từ MT5.
+    Đảm bảo rằng kết nối MT5 đang hoạt động.
+    Hàm này kiểm tra trạng thái terminal và trả về True nếu OK, False nếu không.
+    Nếu mất kết nối, nó sẽ cố gắng kết nối và đăng nhập lại.
+    """
+    terminal_info = mt5.terminal_info()
+    if terminal_info is None or not terminal_info.connected:
+        print("CẢNH BÁO: Mất kết nối MT5. Đang thử kết nối và đăng nhập lại...")
+        # Cố gắng kết nối lại với thông tin đã lưu
+        if _login_credentials["login"]:
+            # Thử khởi tạo lại trước khi đăng nhập
+            if not mt5.initialize():
+                print(f"Lỗi khởi tạo lại MT5: {mt5.last_error()}")
+                return False
+            # Đăng nhập lại
+            return connect_to_mt5(
+                _login_credentials["login"],
+                _login_credentials["password"],
+                _login_credentials["server"]
+            )
+        else:
+            print("Lỗi: Không có thông tin đăng nhập để kết nối lại.")
+            return False
+    return True
+
+# Từ điển ánh xạ chuỗi khung thời gian sang hằng số của MetaTrader5
+TIMEFRAME_MAP = {
+    'm1': mt5.TIMEFRAME_M1,
+    'm5': mt5.TIMEFRAME_M5,
+    'm15': mt5.TIMEFRAME_M15,
+    'm30': mt5.TIMEFRAME_M30,
+    'h1': mt5.TIMEFRAME_H1,
+    'h4': mt5.TIMEFRAME_H4,
+    'd1': mt5.TIMEFRAME_D1,
+    'w1': mt5.TIMEFRAME_W1,
+    'mn1': mt5.TIMEFRAME_MN1
+}
+
+def get_mt5_data(symbol, timeframe_str, num_bars):
+    """
+    Lấy dữ liệu lịch sử từ MT5, đảm bảo symbol được hiển thị trong Market Watch.
     
     Args:
         symbol (str): Ký hiệu tài sản (ví dụ: 'XAUUSD').
-        timeframe (mt5.TIMEFRAME_...): Khung thời gian (ví dụ: mt5.TIMEFRAME_M15).
+        timeframe_str (str): Chuỗi đại diện khung thời gian (ví dụ: 'm1', 'h4').
         num_bars (int): Số lượng thanh nến muốn lấy.
         
     Returns:
         pd.DataFrame: DataFrame chứa dữ liệu OHLCV, hoặc None nếu có lỗi.
     """
-    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_bars)
-    if rates is None:
-        print(f"Không thể lấy dữ liệu cho {symbol} {timeframe}: {mt5.last_error()}")
+    # Đảm bảo kết nối MT5 vẫn còn hoạt động
+    if not _ensure_mt5_connection():
+        print("Lỗi: Không thể thiết lập lại kết nối MT5. Bỏ qua việc lấy dữ liệu.")
         return None
-    
+
+    # --- Kiểm tra và kích hoạt Symbol ---
+    symbol_info = mt5.symbol_info(symbol)
+    if symbol_info is None:
+        print(f"Lỗi: Symbol '{symbol}' không tồn tại trên sàn. Kiểm tra lại tên symbol.")
+        return None
+
+    if not symbol_info.visible:
+        print(f"Cảnh báo: Symbol '{symbol}' chưa được hiển thị trong Market Watch. Đang thử kích hoạt...")
+        if not mt5.symbol_select(symbol, True):
+            print(f"Lỗi: Không thể kích hoạt symbol '{symbol}' trong Market Watch.")
+            return None
+        print(f"Đã kích hoạt '{symbol}' thành công. Chờ 1 giây để terminal cập nhật...")
+        time.sleep(1) # Cho terminal thời gian để cập nhật
+
+    # --- Lấy dữ liệu ---
+    timeframe = TIMEFRAME_MAP.get(timeframe_str.lower())
+    if timeframe is None:
+        print(f"Lỗi: Khung thời gian '{timeframe_str}' không hợp lệ.")
+        return None
+
+    rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_bars)
+    if rates is None or len(rates) == 0: # Kiểm tra cả trường hợp trả về mảng rỗng
+        print(f"Không thể lấy dữ liệu cho {symbol} {timeframe_str.upper()}: {mt5.last_error()}")
+        # Thử lại với một số lượng nhỏ hơn để "warm-up"
+        print("Thử lấy một lượng dữ liệu nhỏ hơn để 'warm-up' chart...")
+        warmup_rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, 10)
+        if warmup_rates is None or len(warmup_rates) == 0:
+            print("Warm-up thất bại. Vui lòng kiểm tra lại symbol và dữ liệu trên terminal.")
+            return None
+        else:
+            print("Warm-up thành công. Dữ liệu có thể chưa đủ, sẽ thử lại ở lần sau.")
+            # Trả về None để vòng lặp chính thử lại sau
+            return None
+
     df = pd.DataFrame(rates)
     df['time'] = pd.to_datetime(df['time'], unit='s')
     df.set_index('time', inplace=True)
@@ -63,6 +148,11 @@ def place_order(symbol, lot, trade_type, sl_value, tp_value, notifier=None):
     Hàm này có thể xử lý cả giá trị SL/TP tuyệt đối (ví dụ: 1905.5) và khoảng cách điểm (ví dụ: 38.0).
     """
     tick = mt5.symbol_info_tick(symbol)
+    # Đảm bảo kết nối trước khi thực hiện hành động
+    if not _ensure_mt5_connection():
+        print("Lỗi: Mất kết nối MT5, không thể đặt lệnh.")
+        return False
+
     if tick is None:
         print(f"Không thể lấy giá tick cho {symbol}")
         return False
@@ -138,6 +228,11 @@ def place_order(symbol, lot, trade_type, sl_value, tp_value, notifier=None):
 
 def modify_position_sltp(position_ticket, new_sl, new_tp, notifier=None):
     """Sửa đổi SL/TP của một lệnh đang mở."""
+    # Đảm bảo kết nối trước khi thực hiện hành động
+    if not _ensure_mt5_connection():
+        print("Lỗi: Mất kết nối MT5, không thể sửa lệnh.")
+        return False
+
     request = {
         "action": mt5.TRADE_ACTION_SLTP,
         "position": position_ticket,
@@ -158,6 +253,11 @@ def modify_position_sltp(position_ticket, new_sl, new_tp, notifier=None):
 
 def close_position(position, notifier=None, comment="Closed by bot"):
     """Đóng một lệnh đang mở."""
+    # Đảm bảo kết nối trước khi thực hiện hành động
+    if not _ensure_mt5_connection():
+        print("Lỗi: Mất kết nối MT5, không thể đóng lệnh.")
+        return False
+
     tick = mt5.symbol_info_tick(position.symbol)
     if tick is None:
         print(f"Không thể lấy giá tick cho {position.symbol} để đóng lệnh.")
@@ -206,6 +306,11 @@ def calculate_lot_size(symbol, sl_points, risk_percent):
     Returns:
         float: Khối lượng lệnh đã được tính toán và làm tròn, hoặc None nếu có lỗi.
     """
+    # Đảm bảo kết nối trước khi thực hiện hành động
+    if not _ensure_mt5_connection():
+        print("Lỗi: Mất kết nối MT5, không thể tính toán lot size.")
+        return None
+
     account_info = mt5.account_info()
     if account_info is None:
         print("Không thể lấy thông tin tài khoản.")
@@ -226,6 +331,21 @@ def calculate_lot_size(symbol, sl_points, risk_percent):
     if tick_size == 0:
         print(f"Lỗi: Tick size cho {symbol} bằng 0.")
         return None
+        
+    # Lớp bảo vệ quan trọng: Nếu khoảng cách SL quá nhỏ, bỏ qua để tránh lỗi tính toán lot size hoặc lệnh bị từ chối.
+    # Đối với XAUUSD, 0.1 USD là 10 pips, thường là mức tối thiểu hợp lý.
+    if sl_points < 0.1: 
+        print(f"CẢNH BÁO: Khoảng cách SL quá nhỏ ({sl_points:.4f} USD). Bỏ qua tính toán lot size để tránh lỗi.")
+        return None
+
+    # Tính toán giá trị thua lỗ cho 1 lot nếu SL bị chạm
+    # sl_points là khoảng cách giá (ví dụ: 10.0 cho 10 USD)
+    # symbol_info.trade_contract_size là kích thước hợp đồng (ví dụ: 100 cho XAUUSD)
+    if not hasattr(symbol_info, 'trade_contract_size') or symbol_info.trade_contract_size <= 0:
+        print(f"CẢNH BÁO: Không thể lấy trade_contract_size cho {symbol}. Sử dụng tính toán thay thế.")
+        loss_per_lot = (sl_points / tick_size) * tick_value # Fallback to original (potentially incorrect) calculation
+    else:
+        loss_per_lot = sl_points * symbol_info.trade_contract_size
 
     loss_per_lot = (sl_points / tick_size) * tick_value
     if loss_per_lot <= 0:
@@ -248,21 +368,23 @@ def calculate_lot_size(symbol, sl_points, risk_percent):
     return final_lot_size
 
 if __name__ == '__main__':
-    # --- Cấu hình thông tin tài khoản Demo MT5 của bạn ---
-    # Bạn cần thay thế các giá trị này bằng thông tin tài khoản demo thực tế của bạn.
-    # Bạn có thể tạo tài khoản demo miễn phí trực tiếp từ nền tảng MT5.
-    MT5_LOGIN = 97919483       # Thay bằng số tài khoản của bạn
-    MT5_PASSWORD = "K*3rFwVv" # Thay bằng mật khẩu của bạn
-    MT5_SERVER = "MetaQuotes-Demo" # Hoặc tên máy chủ demo của broker của bạn
-    
-    if connect_to_mt5(MT5_LOGIN, MT5_PASSWORD, MT5_SERVER):
-        print("\n--- Kết nối thành công. Tiến hành đặt lệnh thử nghiệm ---")
-        
-        # Đặt một lệnh MUA thử nghiệm với khối lượng 0.01 lot, SL 10, TP 20
-        place_order(symbol="XAUUSD", lot=0.01, trade_type="BUY", sl_points=10.0, tp_points=20.0)
-        
-        # Đóng kết nối MT5 khi hoàn tất
-        mt5.shutdown()
-        print("\nĐã ngắt kết nối MT5.")
+    # --- Chạy thử nghiệm kết nối và đặt lệnh bằng cấu hình từ config.json ---
+    from config_manager import get_config
+
+    print("--- Đang chạy thử nghiệm mt5_connector.py ---")
+    config = get_config()
+    if not config:
+        print("Lỗi: Không thể tải tệp cấu hình 'config.json'.")
     else:
-        print("Không thể kết nối đến MT5. Vui lòng kiểm tra thông tin đăng nhập và kết nối mạng.")
+        mt5_credentials = config.get('mt5_credentials', {})
+        login = mt5_credentials.get('login')
+        password = mt5_credentials.get('password')
+        server = mt5_credentials.get('server')
+
+        if connect_to_mt5(login, password, server):
+            print("\n--- Kết nối thành công. Tiến hành đặt lệnh thử nghiệm ---")
+            place_order(symbol="XAUUSD", lot=0.01, trade_type="BUY", sl_value=10.0, tp_value=20.0)
+            mt5.shutdown()
+            print("\nĐã ngắt kết nối MT5.")
+        else:
+            print("\nKhông thể kết nối đến MT5. Vui lòng kiểm tra thông tin trong 'config.json' và kết nối mạng.")

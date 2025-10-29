@@ -31,34 +31,63 @@ def shutdown_handler(signum, frame):
     sys.exit(0) # Đảm bảo thoát hoàn toàn
 
 def manage_open_positions(symbol, trading_params, notifier=None):
-    """Quản lý các lệnh đang mở, bao gồm cả việc dời SL (Breakeven)."""
-    # calculate_lot_size is not defined in mt5_connector.py, so I'm assuming it's defined elsewhere or will be added.
-    use_breakeven = trading_params.get('use_breakeven_stop', False)
-    if not use_breakeven:
-        return
-    be_trigger = trading_params.get('breakeven_trigger_points', 10.0)
-    be_extra = trading_params.get('breakeven_extra_points', 0.5)
+    """Quản lý các lệnh đang mở, bao gồm dời SL (Breakeven) và Trailing Stop."""
     positions = mt5.positions_get(symbol=symbol)
     if positions is None or len(positions) == 0:
         return
+
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
         return
+
+    # Lấy các tham số từ config
+    use_breakeven = trading_params.get('use_breakeven_stop', False)
+    be_trigger = trading_params.get('breakeven_trigger_points', 10.0)
+    be_extra = trading_params.get('breakeven_extra_points', 0.5)
+
+    use_trailing_stop = trading_params.get('use_trailing_stop', False)
+    ts_trigger_step = trading_params.get('trailing_trigger_step', 10.0)
+    ts_profit_step = trading_params.get('trailing_profit_step', 5.0)
+
     for pos in positions:
         if pos.magic != 234002: continue
+
         new_sl = None
+        current_profit = 0
+
         if pos.type == mt5.ORDER_TYPE_BUY:
             current_profit = tick.bid - pos.price_open
-            if current_profit >= be_trigger:
+            
+            # Ưu tiên Trailing Stop nếu được bật
+            if use_trailing_stop and ts_trigger_step > 0 and current_profit >= ts_trigger_step:
+                # Tính số "bước" lợi nhuận đã đạt được
+                profit_steps = int(current_profit // ts_trigger_step)
+                # Tính mức SL mới dựa trên số bước
+                sl_improvement = profit_steps * ts_profit_step
+                potential_new_sl = pos.price_open + sl_improvement
+                # Chỉ cập nhật nếu SL mới tốt hơn SL hiện tại
+                if potential_new_sl > pos.sl:
+                    new_sl = potential_new_sl
+            # Nếu không, sử dụng Breakeven
+            elif use_breakeven and current_profit >= be_trigger and pos.comment != "Breakeven Applied":
                 potential_new_sl = pos.price_open + be_extra
                 if potential_new_sl > pos.sl:
                     new_sl = potential_new_sl
+
         elif pos.type == mt5.ORDER_TYPE_SELL:
             current_profit = pos.price_open - tick.ask
-            if current_profit >= be_trigger:
+
+            if use_trailing_stop and ts_trigger_step > 0 and current_profit >= ts_trigger_step:
+                profit_steps = int(current_profit // ts_trigger_step)
+                sl_improvement = profit_steps * ts_profit_step
+                potential_new_sl = pos.price_open - sl_improvement
+                if potential_new_sl < pos.sl or pos.sl == 0.0:
+                    new_sl = potential_new_sl
+            elif use_breakeven and current_profit >= be_trigger and pos.comment != "Breakeven Applied":
                 potential_new_sl = pos.price_open - be_extra
                 if potential_new_sl < pos.sl or pos.sl == 0.0:
                     new_sl = potential_new_sl
+
         if new_sl is not None:
             print(f"--- Cập nhật SL cho lệnh #{pos.ticket} --- ")
             modify_position_sltp(pos.ticket, new_sl, pos.tp, notifier)
@@ -120,19 +149,7 @@ def main_trader_loop():
     trading_params = config.get('trading', {})
     mt5_credentials = config.get('mt5_credentials', {})
     telegram_config = config.get('telegram', {})
-    strategy_config = config.get('strategy', {})
-
-    SYMBOL = "XAUUSD"
-    RISK_PERCENT = trading_params.get('risk_percent', 1.0)
-    SL_POINTS = trading_params.get('stop_loss_points', 38.0)
-    if SL_POINTS == 0:
-        print("[LỖI] SL_POINTS không thể bằng 0. Vui lòng kiểm tra cấu hình.")
-        SL_POINTS = 10.0 # Giá trị mặc định an toàn
-        print(f"Đặt SL_POINTS về giá trị mặc định: {SL_POINTS}")
-
-
-    TP_POINTS = trading_params.get('take_profit_points', 58.0)
-    MAX_OPEN_TRADES = trading_params.get('max_open_trades', 5)
+    strategy_config = config.get('strategy', {}) # Lấy toàn bộ mục strategy
     
     # --- Khởi tạo các thành phần ---
     if not connect_to_mt5(mt5_credentials.get('login'), mt5_credentials.get('password'), mt5_credentials.get('server')):
@@ -140,44 +157,44 @@ def main_trader_loop():
 
     # --- Chọn chiến thuật và hàm chuẩn bị dữ liệu ---
     active_strategy_name = strategy_config.get('active_strategy', 'MultiTimeframeEmaStrategy')
-    specific_strategy_params = strategy_config.get(active_strategy_name, {})
+    specific_strategy_params = strategy_config.get(active_strategy_name, {}) # Lấy params của chiến lược đang hoạt động
 
     if active_strategy_name == 'MultiTimeframeEmaStrategy':
         strategy = MultiTimeframeEmaStrategy(specific_strategy_params)
         prepare_data_func = prepare_analysis_data
         main_timeframe_minutes = 15
-        required_tfs_for_data = {'m15': mt5.TIMEFRAME_M15, 'm30': mt5.TIMEFRAME_M30, 'h1': mt5.TIMEFRAME_H1, 'h4': mt5.TIMEFRAME_H4}
+        required_tfs_for_data = ['m15', 'm30', 'h1', 'h4']
     elif active_strategy_name == 'ScalpingEmaCrossoverStrategy':
         strategy = ScalpingEmaCrossoverStrategy(specific_strategy_params)
         prepare_data_func = prepare_scalping_data
         main_timeframe_minutes = 5
-        required_tfs_for_data = {'m1': mt5.TIMEFRAME_M1, 'm5': mt5.TIMEFRAME_M5, 'm15': mt5.TIMEFRAME_M15}
+        required_tfs_for_data = ['m1', 'm5', 'm15']
     elif active_strategy_name == 'SupplyDemandStrategy':
         strategy = SupplyDemandStrategy(specific_strategy_params)
         prepare_data_func = prepare_analysis_data
         main_timeframe_minutes = 15
-        required_tfs_for_data = {'m15': mt5.TIMEFRAME_M15, 'h4': mt5.TIMEFRAME_H4, 'd1': mt5.TIMEFRAME_D1}
+        required_tfs_for_data = ['m15', 'h4', 'd1']
     elif active_strategy_name == 'CombinedScalpingStrategy':
         strategy = CombinedScalpingStrategy(specific_strategy_params)
         prepare_data_func = prepare_scalping_data
         main_timeframe_minutes = 5
-        required_tfs_for_data = {'m1': mt5.TIMEFRAME_M1, 'm5': mt5.TIMEFRAME_M5, 'm15': mt5.TIMEFRAME_M15}
+        required_tfs_for_data = ['m1', 'm5', 'm15']
     elif active_strategy_name == 'M15FilteredScalpingStrategy':
         strategy = M15FilteredScalpingStrategy(specific_strategy_params)
-        prepare_data_func = prepare_scalping_data # Sử dụng dữ liệu scalping
+        prepare_data_func = prepare_scalping_data
         main_timeframe_minutes = 1 # Vòng lặp chính sẽ chạy nhanh hơn
-        required_tfs_for_data = {'m1': mt5.TIMEFRAME_M1, 'm5': mt5.TIMEFRAME_M5, 'm15': mt5.TIMEFRAME_M15}
+        required_tfs_for_data = ['m1', 'm5', 'm15']
     elif active_strategy_name == 'MTF_EMA_M1_Trigger_Strategy':
         strategy = MTF_EMA_M1_Trigger_Strategy(specific_strategy_params)
         # Sử dụng dữ liệu scalping vì nó chứa dữ liệu M1 làm cơ sở và các chỉ báo từ khung cao hơn
         prepare_data_func = prepare_scalping_data
         main_timeframe_minutes = 1 # Chạy trên vòng lặp nhanh
-        required_tfs_for_data = {'m1': mt5.TIMEFRAME_M1, 'm5': mt5.TIMEFRAME_M5, 'm15': mt5.TIMEFRAME_M15, 'm30': mt5.TIMEFRAME_M30, 'h1': mt5.TIMEFRAME_H1}
+        required_tfs_for_data = ['m1', 'm5', 'm15', 'm30', 'h1']
     elif active_strategy_name == 'PriceActionSRStrategy':
         strategy = PriceActionSRStrategy(specific_strategy_params)
         prepare_data_func = prepare_analysis_data
         main_timeframe_minutes = 15
-        required_tfs_for_data = {'m15': mt5.TIMEFRAME_M15, 'm30': mt5.TIMEFRAME_M30, 'h1': mt5.TIMEFRAME_H1, 'h4': mt5.TIMEFRAME_H4}
+        required_tfs_for_data = ['m15', 'm30', 'h1', 'h4']
 
     else:
         print(f"Lỗi: Chiến thuật '{active_strategy_name}' không được hỗ trợ. Bot sẽ dừng lại.")
@@ -187,12 +204,22 @@ def main_trader_loop():
     # Khởi tạo Telegram Notifier
     global telegram_notifier
     if telegram_config.get('enabled', False):
-        telegram_notifier = TelegramNotifier(telegram_config.get('bot_token'), telegram_config.get('chat_id'))
+        try:
+            telegram_notifier = TelegramNotifier(telegram_config.get('bot_token'), telegram_config.get('chat_id'))
+        except ValueError as e:
+            print(f"[LỖI] Không thể khởi tạo Telegram Notifier: {e}")
+            telegram_notifier = None
+    
+    if telegram_notifier:
         telegram_notifier.send_message(f"<b>[BOT] Bot đã khởi động với chiến thuật: {active_strategy_name}!</b>")
 
+    # Lấy các tham số giao dịch từ config
+    SYMBOL = trading_params.get('symbol', 'XAUUSD')
+    RISK_PERCENT = trading_params.get('risk_percent', 1.0)
+    MAX_OPEN_TRADES = trading_params.get('max_open_trades', 1)
     print("--- Khởi tạo Bot Live Trading với cấu hình tối ưu ---")
-    print(f"Rủi ro mỗi lệnh: {RISK_PERCENT}% | SL/TP: {SL_POINTS}/{TP_POINTS} | Lệnh tối đa: {MAX_OPEN_TRADES}")
-    print(f"Dời SL: {'Bật' if trading_params.get('use_breakeven_stop') else 'Tắt'} | Trigger: {trading_params.get('breakeven_trigger_points')} | Extra: {trading_params.get('breakeven_extra_points')}")
+    print(f"Symbol: {SYMBOL} | Rủi ro mỗi lệnh: {RISK_PERCENT}% | Lệnh tối đa: {MAX_OPEN_TRADES}")
+    print(f"Trailing Stop: {'Bật' if trading_params.get('use_trailing_stop') else 'Tắt'} | Trigger: {trading_params.get('trailing_trigger_step')} | Step: {trading_params.get('trailing_profit_step')}")
     print(f"Đóng lệnh cuối tuần: {'Bật' if trading_params.get('close_on_friday') else 'Tắt'} | Giờ đóng: {trading_params.get('friday_close_time')} UTC")
 
     # Khởi tạo trạng thái skip_trading_for_weekend khi bot bắt đầu
@@ -239,13 +266,13 @@ def main_trader_loop():
             # Lấy dữ liệu cho các khung thời gian cần thiết dựa trên chiến thuật đã chọn
             timeframes_data = {}
             data_loaded_successfully = True
-            for tf_name, tf_enum in required_tfs_for_data.items():
-                data = get_mt5_data(SYMBOL, tf_enum, 500)
+            for tf_name in required_tfs_for_data:
+                data = get_mt5_data(SYMBOL, tf_name, 500)
                 if data is None:
                     print(f"Lỗi: Không thể lấy dữ liệu cho khung thời gian {tf_name.upper()}.")
                     data_loaded_successfully = False
                     break
-                timeframes_data[tf_name] = data
+                timeframes_data[tf_name.lower()] = data
             
             if not data_loaded_successfully:
                 print("Thử lại sau 60 giây.")
@@ -253,10 +280,10 @@ def main_trader_loop():
 
             # Chuẩn bị dữ liệu bằng hàm phù hợp với chiến thuật
             # Đối với prepare_analysis_data, cần truyền sr_periods
-            if active_strategy_name in ['MultiTimeframeEmaStrategy', 'SupplyDemandStrategy']:
+            if prepare_data_func == prepare_analysis_data:
                 analysis_data = prepare_data_func(timeframes_data, specific_strategy_params.get('sr_periods', {}))
-            else: # Các chiến lược scalping không cần sr_periods
-                analysis_data = prepare_data_func(timeframes_data, specific_strategy_params)
+            else: # prepare_scalping_data
+                analysis_data = prepare_data_func(timeframes_data, strategy_config) # Truyền toàn bộ config của strategy
             
             # Chiến lược giờ đây trả về (tín hiệu, sl, tp)
             trade_signal, dynamic_sl, dynamic_tp = strategy.get_signal(analysis_data)
@@ -269,32 +296,29 @@ def main_trader_loop():
                     trade_type = "BUY" if trade_signal == 1 else "SELL"
                     print(f"*** TÍN HIỆU {trade_type} ĐƯỢC PHÁT HIỆN! ***")
                     
-                    # --- Tính toán SL/TP và Lot Size ---
-                    # Mặc định sử dụng giá trị cố định từ config
-                    final_sl_price = dynamic_sl if dynamic_sl is not None else 0
-                    final_tp_price = dynamic_tp if dynamic_tp is not None else 0
-                    
-                    # Tính khoảng cách SL để tính lot size
-                    # Nếu SL động được cung cấp, tính khoảng cách từ giá hiện tại
-                    if final_sl_price > 0:
+                    # --- Tính toán Lot Size DỰA TRÊN SL ĐỘNG ---
+                    if dynamic_sl is not None and dynamic_sl > 0:
                         current_price = mt5.symbol_info_tick(SYMBOL).ask if trade_type == "BUY" else mt5.symbol_info_tick(SYMBOL).bid
-                        sl_distance_points = abs(current_price - final_sl_price)
-                    else: # Nếu không, dùng khoảng cách cố định
-                        sl_distance_points = SL_POINTS
+                        if current_price > 0:
+                            sl_distance_points = abs(current_price - dynamic_sl)
+                            print(f"Đang tính toán khối lượng lệnh cho rủi ro {RISK_PERCENT}%...")
+                            lot_size = calculate_lot_size(SYMBOL, sl_distance_points, RISK_PERCENT)
 
-                    print(f"Đang tính toán khối lượng lệnh cho rủi ro {RISK_PERCENT}%...")
-                    lot_size = calculate_lot_size(SYMBOL, sl_distance_points, RISK_PERCENT)
-
-                    if lot_size is not None and lot_size > 0:
-                        # Truyền giá trị SL/TP cuối cùng vào hàm đặt lệnh
-                        place_order(SYMBOL, lot_size, trade_type, final_sl_price or SL_POINTS, final_tp_price or TP_POINTS, telegram_notifier)
-                        last_trade_time = current_candle_time
-                        # Thông báo chi tiết hơn đã được chuyển vào hàm place_order
-                        time.sleep(900) # Tạm dừng sau khi đặt lệnh
+                            if lot_size is not None and lot_size > 0:
+                                # Truyền giá trị SL/TP cuối cùng vào hàm đặt lệnh
+                                place_order(SYMBOL, lot_size, trade_type, dynamic_sl, dynamic_tp, telegram_notifier)
+                                last_trade_time = current_candle_time
+                                time.sleep(900) # Tạm dừng sau khi đặt lệnh
+                            else:
+                                print("Không thể tính toán khối lượng lệnh hoặc khối lượng bằng 0. Bỏ qua tín hiệu.")
+                                if telegram_notifier:
+                                    telegram_notifier.send_message(f"<b>[BOT] Không thể tính toán khối lượng lệnh hoặc khối lượng bằng 0. Bỏ qua tín hiệu {trade_type}.</b>")
+                        else:
+                            print("Không thể lấy giá thị trường hiện tại. Bỏ qua tín hiệu.")
                     else:
-                        print("Không thể tính toán khối lượng lệnh hoặc khối lượng bằng 0. Bỏ qua tín hiệu.")
+                        print("Chiến lược không trả về SL động. Bỏ qua tín hiệu để đảm bảo an toàn.")
                         if telegram_notifier:
-                            telegram_notifier.send_message(f"<b>[BOT] Không thể tính toán khối lượng lệnh hoặc khối lượng bằng 0. Bỏ qua tín hiệu {trade_type}.</b>")
+                            telegram_notifier.send_message(f"<b>[CẢNH BÁO] Chiến lược không trả về SL động. Bỏ qua tín hiệu {trade_type}.</b>")
             else:
                 print("Không có tín hiệu mới.")
                 # if telegram_notifier: telegram_notifier.send_message(f"[{datetime.datetime.now().strftime('%H:%M')}] Không có tín hiệu mới.") # Có thể quá nhiều tin nhắn

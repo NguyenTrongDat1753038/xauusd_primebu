@@ -11,31 +11,41 @@ class BaseStrategy:
 
 class MultiTimeframeEmaStrategy(BaseStrategy):
     """
-    Generates signals based on trend alignment across multiple timeframes (H4, H1, M30, M15).
-    Entry is confirmed with a candlestick pattern on the M15 chart.
+    Generates signals based on trend alignment across multiple timeframes.
+    - ADX filter is added to ensure trend strength.
+    - Adaptive Volatility Filter: Uses wider SL/TP during high volatility periods.
     """
     def __init__(self, params):
         super().__init__(params)
-        self.params = params
+        self.adx_threshold = params.get('adx_threshold', 25)
+        
+        # Volatility Filter Params
+        self.use_volatility_filter = params.get('use_volatility_filter', False)
+        self.volatility_threshold = params.get('volatility_threshold', 1.5) # e.g., 1.5 means 50% above average
+        
+        # SL/TP Multipliers
+        self.atr_sl_multiplier = params.get('atr_sl_multiplier', 2.0)
+        self.atr_tp_multiplier = params.get('atr_tp_multiplier', 4.0)
+        self.atr_sl_multiplier_high_vol = params.get('atr_sl_multiplier_high_vol', 3.0)
+        self.atr_tp_multiplier_high_vol = params.get('atr_tp_multiplier_high_vol', 6.0)
+
 
     def get_signal(self, analyzed_data):
         if len(analyzed_data) < 2:
             return 0, None, None
             
         latest = analyzed_data.iloc[-1]
+        entry_price = latest['CLOSE']
 
         # --- 1. Check Higher Timeframe Trend Alignment ---
-        h4_trend = latest.get('H4_TREND', 0)
         h1_trend = latest.get('H1_TREND', 0)
         m30_trend = latest.get('M30_TREND', 0)
-
-        # Bỏ qua H4, chỉ cần H1 và M30 đồng thuận
         is_uptrend_aligned = (h1_trend == 1) and (m30_trend == 1) 
         is_downtrend_aligned = (h1_trend == -1) and (m30_trend == -1)
 
         # --- 2. Check M15 Execution Timeframe Signal ---
-        m15_close_above_ema34 = latest['CLOSE'] > latest['EMA_34']
-        m15_close_below_ema34 = latest['CLOSE'] < latest['EMA_34']
+        m15_close_above_ema34 = entry_price > latest['EMA_34']
+        m15_close_below_ema34 = entry_price < latest['EMA_34']
 
         # --- 3. Check for Candlestick Confirmation ---
         bullish_patterns = ['CDL_HAMMER', 'CDL_INVERTEDHAMMER', 'CDL_ENGULFING', 'CDL_PIERCING', 'CDL_MORNINGSTAR']
@@ -43,14 +53,44 @@ class MultiTimeframeEmaStrategy(BaseStrategy):
         is_bullish_candle = any(latest.get(p, 0) > 0 for p in bullish_patterns)
         is_bearish_candle = any(latest.get(p, 0) < 0 for p in bearish_patterns)
 
-        # --- 4. Generate Signal ---
-        # BUY Signal: All higher TFs are in uptrend, M15 confirms with close > EMA34 and a bullish candle.
-        if is_uptrend_aligned and m15_close_above_ema34 and is_bullish_candle:
-            return 1, None, None # BUY, SL/TP sẽ được xử lý bởi trading_params
+        # --- 4. ADX Trend Strength Filter ---
+        is_trend_strong = latest.get('ADX_14', 0) > self.adx_threshold
 
-        # SELL Signal: All higher TFs are in downtrend, M15 confirms with close < EMA34 and a bearish candle.
-        if is_downtrend_aligned and m15_close_below_ema34 and is_bearish_candle:
-            return -1, None, None # SELL, SL/TP sẽ được xử lý bởi trading_params
+        # --- 5. Volatility Regime Check ---
+        atr = latest.get('ATRR_14', 0)
+        avg_atr = latest.get('ATRR_14_SMA_50', 0)
+        
+        is_high_vol = False
+        if self.use_volatility_filter and atr > 0 and avg_atr > 0:
+            is_high_vol = atr > (avg_atr * self.volatility_threshold)
+
+        # --- 6. Generate Signal & Calculate SL/TP ---
+        signal = 0
+        if is_uptrend_aligned and m15_close_above_ema34 and is_bullish_candle and is_trend_strong:
+            signal = 1
+        elif is_downtrend_aligned and m15_close_below_ema34 and is_bearish_candle and is_trend_strong:
+            signal = -1
+
+        if signal != 0:
+            # Adaptive SL/TP based on volatility
+            if is_high_vol:
+                sl_multiplier = self.atr_sl_multiplier_high_vol
+                tp_multiplier = self.atr_tp_multiplier_high_vol
+            else:
+                sl_multiplier = self.atr_sl_multiplier
+                tp_multiplier = self.atr_tp_multiplier
+
+            sl_points = atr * sl_multiplier
+            tp_points = atr * tp_multiplier
+
+            if signal == 1: # BUY
+                stop_loss = entry_price - sl_points
+                take_profit = entry_price + tp_points
+            else: # SELL
+                stop_loss = entry_price + sl_points
+                take_profit = entry_price - tp_points
+            
+            return signal, stop_loss, take_profit
 
         return 0, None, None # No signal
 

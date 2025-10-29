@@ -32,12 +32,16 @@ class TelegramNotifier:
         """Luồng nền xử lý việc gửi tin nhắn từ hàng đợi."""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        while True:
-            message = self.message_queue.get()
-            if message is None: # Tín hiệu để dừng luồng
-                break
-            loop.run_until_complete(self._send_message_async(message))
-            self.message_queue.task_done()
+        try:
+            while True:
+                message = self.message_queue.get()
+                if message is None: # Tín hiệu để dừng luồng
+                    break
+                loop.run_until_complete(self._send_message_async(message))
+                self.message_queue.task_done()
+        finally:
+            loop.close()
+            print("[Telegram] Event loop closed.")
 
     def send_message(self, message):
         """
