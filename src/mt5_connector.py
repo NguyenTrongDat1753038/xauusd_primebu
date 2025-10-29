@@ -347,7 +347,6 @@ def calculate_lot_size(symbol, sl_points, risk_percent):
     else:
         loss_per_lot = sl_points * symbol_info.trade_contract_size
 
-    loss_per_lot = (sl_points / tick_size) * tick_value
     if loss_per_lot <= 0:
         print(f"Lỗi: Giá trị thua lỗ mỗi lot không hợp lệ ({loss_per_lot:.2f}). Kiểm tra lại sl_points.")
         return None
