@@ -6,15 +6,17 @@ def analyze_performance():
     Analyzes the results of a backtest from a CSV file.
     """
     # --- 1. Load Data ---
-    results_file = 'backtest_results_dynamic_sizing.csv'
+    # Đường dẫn tương đối đến file kết quả trong thư mục 'reports'
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    results_file = os.path.join(project_root, 'reports', 'backtest_results_OPTIMIZED.csv')
     
     # Check if file exists
     if not os.path.exists(results_file):
         print(f"Error: Results file not found at '{results_file}'")
-        print("Please run the backtest first to generate the results file.")
+        print("Please run 'run_backtest.py' first to generate the results file.")
         return
 
-    print(f"Analyzing backtest results from '{results_file}'...")
+    print(f"Analyzing backtest results from '{os.path.basename(results_file)}'...")
     df = pd.read_csv(results_file)
 
     # --- 2. Data Preparation ---

@@ -30,6 +30,23 @@ def shutdown_handler(signum, frame):
     print("[*] Đã ngắt kết nối khỏi MetaTrader 5. Tạm biệt!")
     sys.exit(0) # Đảm bảo thoát hoàn toàn
 
+def _get_trade_management_params(trading_params):
+    """Helper function to extract all trade management parameters from config."""
+    return {
+        'use_breakeven': trading_params.get('use_breakeven_stop', False),
+        'be_trigger': trading_params.get('breakeven_trigger_points', 5.0),
+        'be_extra': trading_params.get('breakeven_extra_points', 1.0),
+        'use_trailing_stop': trading_params.get('use_trailing_stop', False),
+        'ts_trigger_step': trading_params.get('trailing_trigger_step', 5.0),
+        'ts_profit_step': trading_params.get('trailing_profit_step', 1.0),
+        'use_tiered_ts': trading_params.get('use_tiered_trailing_stop', False),
+        'tiered_ts_config': sorted(trading_params.get('tiered_trailing_stops', []), key=lambda x: x['trigger'], reverse=True),
+        'use_tp_extension': trading_params.get('use_tp_extension', False),
+        'tpe_trigger': trading_params.get('tp_extension_trigger_points', 8.0),
+        'tpe_factor': trading_params.get('tp_extension_factor', 1.2),
+        'tpe_sl_target': trading_params.get('tp_extension_sl_target_points', 1.6),
+    }
+
 def manage_open_positions(symbol, trading_params, notifier=None):
     """Quản lý các lệnh đang mở, bao gồm dời SL (Breakeven) và Trailing Stop."""
     positions = mt5.positions_get(symbol=symbol)
@@ -40,57 +57,109 @@ def manage_open_positions(symbol, trading_params, notifier=None):
     if tick is None:
         return
 
-    # Lấy các tham số từ config
-    use_breakeven = trading_params.get('use_breakeven_stop', False)
-    be_trigger = trading_params.get('breakeven_trigger_points', 10.0)
-    be_extra = trading_params.get('breakeven_extra_points', 0.5)
-
-    use_trailing_stop = trading_params.get('use_trailing_stop', False)
-    ts_trigger_step = trading_params.get('trailing_trigger_step', 10.0)
-    ts_profit_step = trading_params.get('trailing_profit_step', 5.0)
+    # Lấy tất cả các tham số quản lý lệnh từ config
+    params = _get_trade_management_params(trading_params)
 
     for pos in positions:
         if pos.magic != 234002: continue
 
         new_sl = None
+        new_tp = None
         current_profit = 0
+        comment_update = None # Để theo dõi trạng thái của lệnh
 
         if pos.type == mt5.ORDER_TYPE_BUY:
             current_profit = tick.bid - pos.price_open
             
-            # Ưu tiên Trailing Stop nếu được bật
-            if use_trailing_stop and ts_trigger_step > 0 and current_profit >= ts_trigger_step:
-                # Tính số "bước" lợi nhuận đã đạt được
-                profit_steps = int(current_profit // ts_trigger_step)
-                # Tính mức SL mới dựa trên số bước
-                sl_improvement = profit_steps * ts_profit_step
-                potential_new_sl = pos.price_open + sl_improvement
-                # Chỉ cập nhật nếu SL mới tốt hơn SL hiện tại
+            # --- Logic quản lý SL (Ưu tiên theo thứ tự như trong backtester) ---
+            # 1. Trailing Stop theo bậc (nếu bật)
+            if params['use_tiered_ts']:
+                for tier in params['tiered_ts_config']:
+                    if current_profit >= tier['trigger']:
+                        potential_new_sl = pos.price_open + tier['sl_add']
+                        if potential_new_sl > pos.sl:
+                            new_sl = potential_new_sl
+                            comment_update = "Tiered Trailing"
+                        break # Áp dụng bậc cao nhất và dừng
+            # 2. Trailing Stop tuyến tính (nếu bậc không bật)
+            elif params['use_trailing_stop'] and params['ts_trigger_step'] > 0:
+                if current_profit >= params['ts_trigger_step']:
+                    profit_steps = int(current_profit // params['ts_trigger_step'])
+                    # Kiểm tra xem comment đã chứa "Linear Trailing" và số bước chưa
+                    current_steps = 0
+                    if "Linear Trailing" in pos.comment:
+                        try:
+                            current_steps = int(pos.comment.split(":")[-1])
+                        except:
+                            pass
+                    if profit_steps > current_steps:
+                        sl_improvement = profit_steps * params['ts_profit_step']
+                        potential_new_sl = pos.price_open + sl_improvement
+                        if potential_new_sl > pos.sl:
+                            new_sl = potential_new_sl
+                            comment_update = f"Linear Trailing:{profit_steps}"
+            # 3. Breakeven (nếu các loại trailing stop không bật)
+            elif params['use_breakeven'] and current_profit >= params['be_trigger'] and "Breakeven" not in pos.comment:
+                potential_new_sl = pos.price_open + params['be_extra']
                 if potential_new_sl > pos.sl:
                     new_sl = potential_new_sl
-            # Nếu không, sử dụng Breakeven
-            elif use_breakeven and current_profit >= be_trigger and pos.comment != "Breakeven Applied":
-                potential_new_sl = pos.price_open + be_extra
-                if potential_new_sl > pos.sl:
+                    comment_update = "Breakeven Applied"
+
+            # --- Logic mở rộng TP (chạy độc lập) ---
+            if params['use_tp_extension'] and "TP Extended" not in pos.comment and current_profit >= params['tpe_trigger']:
+                tp_range = abs(pos.tp - pos.price_open) # Giả định TP ban đầu được lưu đúng
+                new_tp = pos.price_open + (tp_range * params['tpe_factor'])
+                potential_new_sl = pos.price_open + params['tpe_sl_target']
+                if potential_new_sl > (new_sl or pos.sl): # Cập nhật SL nếu tốt hơn
                     new_sl = potential_new_sl
+                comment_update = "TP Extended"
 
         elif pos.type == mt5.ORDER_TYPE_SELL:
             current_profit = pos.price_open - tick.ask
 
-            if use_trailing_stop and ts_trigger_step > 0 and current_profit >= ts_trigger_step:
-                profit_steps = int(current_profit // ts_trigger_step)
-                sl_improvement = profit_steps * ts_profit_step
-                potential_new_sl = pos.price_open - sl_improvement
+            # --- Logic quản lý SL ---
+            if params['use_tiered_ts']:
+                for tier in params['tiered_ts_config']:
+                    if current_profit >= tier['trigger']:
+                        potential_new_sl = pos.price_open - tier['sl_add']
+                        if potential_new_sl < pos.sl or pos.sl == 0.0:
+                            new_sl = potential_new_sl
+                            comment_update = "Tiered Trailing"
+                        break
+            elif params['use_trailing_stop'] and params['ts_trigger_step'] > 0:
+                if current_profit >= params['ts_trigger_step']:
+                    profit_steps = int(current_profit // params['ts_trigger_step'])
+                    current_steps = 0
+                    if "Linear Trailing" in pos.comment:
+                        try: current_steps = int(pos.comment.split(":")[-1])
+                        except: pass
+                    if profit_steps > current_steps:
+                        sl_improvement = profit_steps * params['ts_profit_step']
+                        potential_new_sl = pos.price_open - sl_improvement
+                        if potential_new_sl < pos.sl or pos.sl == 0.0:
+                            new_sl = potential_new_sl
+                            comment_update = f"Linear Trailing:{profit_steps}"
+            elif params['use_breakeven'] and current_profit >= params['be_trigger'] and "Breakeven" not in pos.comment:
+                potential_new_sl = pos.price_open - params['be_extra']
                 if potential_new_sl < pos.sl or pos.sl == 0.0:
                     new_sl = potential_new_sl
-            elif use_breakeven and current_profit >= be_trigger and pos.comment != "Breakeven Applied":
-                potential_new_sl = pos.price_open - be_extra
-                if potential_new_sl < pos.sl or pos.sl == 0.0:
+                    comment_update = "Breakeven Applied"
+            
+            # --- Logic mở rộng TP ---
+            if params['use_tp_extension'] and "TP Extended" not in pos.comment and current_profit >= params['tpe_trigger']:
+                tp_range = abs(pos.tp - pos.price_open)
+                new_tp = pos.price_open - (tp_range * params['tpe_factor'])
+                potential_new_sl = pos.price_open - params['tpe_sl_target']
+                if potential_new_sl < (new_sl or pos.sl) or (new_sl or pos.sl) == 0.0:
                     new_sl = potential_new_sl
+                comment_update = "TP Extended"
 
-        if new_sl is not None:
+        # --- Gửi yêu cầu sửa đổi nếu có thay đổi ---
+        if new_sl is not None or new_tp is not None:
             print(f"--- Cập nhật SL cho lệnh #{pos.ticket} --- ")
-            modify_position_sltp(pos.ticket, new_sl, pos.tp, notifier)
+            final_sl = new_sl if new_sl is not None else pos.sl
+            final_tp = new_tp if new_tp is not None else pos.tp
+            modify_position_sltp(pos.ticket, final_sl, final_tp, notifier, comment_update)
 
 def handle_friday_close(symbol, trading_params, notifier=None):
     """Kiểm tra và đóng tất cả các lệnh vào cuối tuần."""
@@ -183,7 +252,7 @@ def main_trader_loop():
         strategy = M15FilteredScalpingStrategy(specific_strategy_params)
         prepare_data_func = prepare_scalping_data
         main_timeframe_minutes = 1 # Vòng lặp chính sẽ chạy nhanh hơn
-        required_tfs_for_data = ['m1', 'm5', 'm15']
+        required_tfs_for_data = ['m1', 'm5', 'm15', 'm30', 'h1', 'h4']
     elif active_strategy_name == 'MTF_EMA_M1_Trigger_Strategy':
         strategy = MTF_EMA_M1_Trigger_Strategy(specific_strategy_params)
         # Sử dụng dữ liệu scalping vì nó chứa dữ liệu M1 làm cơ sở và các chỉ báo từ khung cao hơn
@@ -214,7 +283,7 @@ def main_trader_loop():
         telegram_notifier.send_message(f"<b>[BOT] Bot đã khởi động với chiến thuật: {active_strategy_name}!</b>")
 
     # Lấy các tham số giao dịch từ config
-    SYMBOL = trading_params.get('symbol', 'XAUUSD')
+    SYMBOL = trading_params.get('live_symbol', 'XAUUSD') # Sử dụng live_symbol
     RISK_PERCENT = trading_params.get('risk_percent', 1.0)
     MAX_OPEN_TRADES = trading_params.get('max_open_trades', 1)
     print("--- Khởi tạo Bot Live Trading với cấu hình tối ưu ---")
@@ -239,6 +308,16 @@ def main_trader_loop():
 
     while True:
         try:
+            # --- BỘ LỌC THỜI GIAN ---
+            now_utc = datetime.datetime.now(datetime.UTC)
+            # Danh sách các giờ không giao dịch (ví dụ: 0 giờ UTC)
+            restricted_hours = [0] 
+            if now_utc.hour in restricted_hours:
+                print(f"[{now_utc.strftime('%Y-%m-%d %H:%M:%S')}] Đang trong khung giờ bị hạn chế ({now_utc.hour}h UTC). Tạm dừng tìm tín hiệu.")
+                time.sleep(60) # Chờ 1 phút rồi kiểm tra lại
+                continue
+            # --- KẾT THÚC BỘ LỌC THỜI GIAN ---
+
             handle_friday_close(SYMBOL, trading_params, telegram_notifier) # Cập nhật trạng thái skip_trading_for_weekend
             if skip_trading_for_weekend: # Nếu cờ được bật, bỏ qua tất cả logic giao dịch
                 print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Đang trong thời gian nghỉ cuối tuần. Đang chờ đến thứ Hai...")
@@ -299,14 +378,30 @@ def main_trader_loop():
                     # --- Tính toán Lot Size DỰA TRÊN SL ĐỘNG ---
                     if dynamic_sl is not None and dynamic_sl > 0:
                         current_price = mt5.symbol_info_tick(SYMBOL).ask if trade_type == "BUY" else mt5.symbol_info_tick(SYMBOL).bid
+                        print(f"Giá vào lệnh dự kiến: {current_price:.2f} | SL động: {dynamic_sl:.2f} | TP động: {dynamic_tp:.2f}")
                         if current_price > 0:
                             sl_distance_points = abs(current_price - dynamic_sl)
                             print(f"Đang tính toán khối lượng lệnh cho rủi ro {RISK_PERCENT}%...")
-                            lot_size = calculate_lot_size(SYMBOL, sl_distance_points, RISK_PERCENT)
+                            
+                            # Lấy thông tin symbol để kiểm tra lot tối thiểu
+                            symbol_info = mt5.symbol_info(SYMBOL)
+                            min_lot = symbol_info.volume_min if symbol_info else 0.01
 
-                            if lot_size is not None and lot_size > 0:
+                            calculated_lot_size = calculate_lot_size(SYMBOL, sl_distance_points, RISK_PERCENT)
+
+                            # KIỂM TRA AN TOÀN: Nếu lot size tính được bị làm tròn lên và vượt quá rủi ro cho phép, hãy bỏ qua
+                            if calculated_lot_size == min_lot:
+                                theoretical_risk_amount = calculated_lot_size * sl_distance_points * symbol_info.trade_contract_size
+                                account_balance = mt5.account_info().balance
+                                theoretical_risk_percent = (theoretical_risk_amount / account_balance) * 100
+                                # Cho phép rủi ro thực tế vượt quá rủi ro cài đặt tối đa 50% (ví dụ: 3% -> 4.5%)
+                                if theoretical_risk_percent > RISK_PERCENT * 1.5:
+                                    print(f"CẢNH BÁO AN TOÀN: Lot tối thiểu ({min_lot}) làm rủi ro thực tế ({theoretical_risk_percent:.2f}%) vượt quá ngưỡng cho phép. Bỏ qua tín hiệu.")
+                                    calculated_lot_size = 0 # Đặt lại để bỏ qua
+
+                            if calculated_lot_size is not None and calculated_lot_size > 0:
                                 # Truyền giá trị SL/TP cuối cùng vào hàm đặt lệnh
-                                place_order(SYMBOL, lot_size, trade_type, dynamic_sl, dynamic_tp, telegram_notifier)
+                                place_order(SYMBOL, calculated_lot_size, trade_type, dynamic_sl, dynamic_tp, telegram_notifier)
                                 last_trade_time = current_candle_time
                                 time.sleep(900) # Tạm dừng sau khi đặt lệnh
                             else:
@@ -325,7 +420,7 @@ def main_trader_loop():
             
             # Logic ngủ mới: Nếu là chiến lược scalping, chạy nhanh hơn. Nếu không, chờ nến tiếp theo.
             if "Scalping" in active_strategy_name or "M1_Trigger" in active_strategy_name:
-                sleep_seconds = 10 # Quét mỗi 10 giây cho scalping
+                sleep_seconds = 5 # Quét mỗi 10 giây cho scalping
                 print(f"Chế độ Scalping. Chờ {sleep_seconds} giây...")
             else:
                 now = datetime.datetime.now(datetime.UTC)

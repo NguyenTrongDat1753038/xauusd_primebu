@@ -7,7 +7,23 @@
     "strategy": {
     "active_strategy": "M15FilteredScalpingStrategy",
         "M15FilteredScalpingStrategy": {
-            "m15_ema_strength_threshold": 0.5,
+            "m15_ema_strength_threshold": 0.05,
+            "adx_trend_threshold": 25,
+            "adx_range_threshold": 15,
+            "bbw_threshold": 0.003,
+            "min_candle_confirmations": 1,
+            "bullish_candle_patterns": [
+                "CDL_HAMMER", "CDL_INVERTEDHAMMER", "CDL_ENGULFING", "CDL_PIERCING", "CDL_MORNINGSTAR", "CDL_3WHITESOLDIERS"
+            ],
+            "bearish_candle_patterns": [
+                "CDL_HANGINGMAN", "CDL_SHOOTINGSTAR", "CDL_ENGULFING", "CDL_EVENINGSTAR", "CDL_3BLACKCROWS"
+            ],
+            "use_h1_trend_filter": false,
+            "use_h4_trend_filter": false,
+            "use_dynamic_ema_sltp": true,
+            "dynamic_sltp_rr_ratio": 2.0,
+            "sl_buffer_points": 0.2,
+            
             "required_votes": 1,
             "ScalpingEmaCrossoverStrategy": {
                 "ema_fast_len": 9,
@@ -16,16 +32,16 @@
                 "rr_ratio": 1.5
             },
             "ScalpingRsiPullbackStrategy": {
-                "rsi_oversold": 35,
-                "rsi_overbought": 65,
+                "rsi_oversold": 35, 
+                "rsi_overbought": 65, 
                 "swing_lookback": 10,
                 "rr_ratio": 1.5
             }
         },
         "MTF_EMA_M1_Trigger_Strategy": {
-            "m1_body_size_threshold": 0.5,             // Ngưỡng kích thước thân nến M1 để kích hoạt
-            "m15_ema_separation_threshold": 5.0,       // Khoảng cách tối đa giữa giá và M15 EMA 89 cho context M15 truyền thống
-            "h1_resistance_tolerance": 1.0             // Khoảng cách tối đa từ H1 EMA 89 để coi là chạm kháng cự
+            "m1_body_size_threshold": 0.5,           
+            "m15_ema_separation_threshold": 5.0,       
+            "h1_resistance_tolerance": 1.0             
         },
         "CombinedScalpingStrategy": {
             "ema_strength_threshold": 0.1,
@@ -72,6 +88,14 @@
                 "h4": 50,
                 "d1": 50
             }
+        },
+        "BollingerBandMeanReversionStrategy": {
+            "bb_length": 20,
+            "bb_std_dev": 2,
+            "rsi_oversold": 30,
+            "rsi_overbought": 70,
+            "swing_lookback": 10,
+            "rr_ratio": 1.5
         }
     },
     "telegram": {
@@ -83,42 +107,46 @@
         "risk_percent": 3.0,
         "initial_balance": 10000,
         "max_open_trades": 4,
-        "use_breakeven_stop": false,
+        "use_dynamic_sizing": true,
+        "use_breakeven_stop": true,
         "breakeven_trigger_points": 10.0,
         "breakeven_extra_points": 0.5,
         "use_trailing_stop": true,
         "trailing_trigger_step": 10.0,
-        "trailing_profit_step": 5.0,
-        "use_tiered_trailing_stop": false,
+        "trailing_profit_step": 2.0,
+        "use_tiered_trailing_stop": true,
         "tiered_trailing_stops": [
             {
-                "trigger": 10,
+                "trigger": 8,
+                "sl_add": 1
+            },
+            {
+                "trigger": 18,
                 "sl_add": 5
             },
             {
-                "trigger": 20,
-                "sl_add": 10
-            },
-            {
-                "trigger": 30,
+                "trigger": 28,
                 "sl_add": 15
             },
             {
-                "trigger": 40,
-                "sl_add": 20
+                "trigger": 38,
+                "sl_add": 25
             },
             {
-                "trigger": 50,
-                "sl_add": 25
+                "trigger": 48,
+                "sl_add": 35
             }
         ],
-        "use_tp_extension": false,
+        "use_tp_extension": true,
         "tp_extension_trigger_points": 8.0,
         "tp_extension_factor": 1.2,
         "tp_extension_sl_target_points": 1.6,
-        "use_candlestick_exit": false,
+        "use_candlestick_exit": true,
+        "contract_size": 100.0,
         "close_on_friday": true,
         "friday_close_time": "21:30:00",
-        "symbol": "XAUUSDm"
+        "live_symbol": "XAUUSDm",
+        "backtest_symbol": "XAUUSDm",
+        "target_sl_distance_points": 3.0
     }
 }

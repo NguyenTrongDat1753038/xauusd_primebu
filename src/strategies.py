@@ -413,6 +413,63 @@ class SupplyDemandStrategy(BaseStrategy):
 
         return 0, None, None # Không có tín hiệu
 
+
+class BollingerBandMeanReversionStrategy(BaseStrategy):
+    """
+    Chiến lược Mean Reversion dựa trên Bollinger Bands và RSI.
+    - MUA khi giá chạm dải dưới BB và RSI quá bán.
+    - BÁN khi giá chạm dải trên BB và RSI quá mua.
+    """
+    def __init__(self, params):
+        super().__init__(params)
+        self.bb_length = params.get('bb_length', 20)
+        self.bb_std_dev = params.get('bb_std_dev', 2)
+        self.rsi_oversold = params.get('rsi_oversold', 30)
+        self.rsi_overbought = params.get('rsi_overbought', 70)
+        self.swing_lookback = params.get('swing_lookback', 10) # Tìm đỉnh/đáy cho SL
+        self.rr_ratio = params.get('rr_ratio', 1.5) # Tỷ lệ Risk/Reward
+
+    def get_signal(self, analyzed_data):
+        if len(analyzed_data) < self.bb_length:
+            return 0, None, None
+
+        latest = analyzed_data.iloc[-1]
+        entry_price = latest['CLOSE_M5'] # Sử dụng giá M5 cho chiến lược scalping
+
+        # Lấy các chỉ báo đã được tính toán trong analysis.py
+        # SỬA LỖI: Sửa lại tên cột Bollinger Bands cho đúng với định dạng của pandas-ta
+        # Ví dụ: BBU_20_2.0 và BBL_20_2.0
+        bb_upper = latest.get(f'BBU_{self.bb_length}_{self.bb_std_dev}.0')
+        bb_lower = latest.get(f'BBL_{self.bb_length}_{self.bb_std_dev}.0')
+        rsi = latest.get('RSI_14')
+
+        if any(v is None for v in [bb_upper, bb_lower, rsi]):
+            return 0, None, None
+
+        # Tín hiệu MUA: Giá chạm dải dưới BB và RSI quá bán
+        if entry_price <= bb_lower and rsi < self.rsi_oversold:
+            # Đặt SL dưới đáy gần nhất
+            recent_low = analyzed_data['LOW_M5'].iloc[-self.swing_lookback:].min()
+            stop_loss = recent_low - 0.2 # Thêm một khoảng đệm nhỏ
+            
+            # Tính TP dựa trên tỷ lệ R/R
+            sl_distance = entry_price - stop_loss
+            take_profit = entry_price + (sl_distance * self.rr_ratio)
+            return 1, stop_loss, take_profit
+
+        # Tín hiệu BÁN: Giá chạm dải trên BB và RSI quá mua
+        if entry_price >= bb_upper and rsi > self.rsi_overbought:
+            # Đặt SL trên đỉnh gần nhất
+            recent_high = analyzed_data['HIGH_M5'].iloc[-self.swing_lookback:].max()
+            stop_loss = recent_high + 0.2 # Thêm một khoảng đệm nhỏ
+
+            # Tính TP dựa trên tỷ lệ R/R
+            sl_distance = stop_loss - entry_price
+            take_profit = entry_price - (sl_distance * self.rr_ratio)
+            return -1, stop_loss, take_profit
+
+        return 0, None, None # Không có tín hiệu
+
 class MultiEmaPAStochStrategy(BaseStrategy):
     """
     A confluence strategy that uses EMAs for trend, S/R zones for value,

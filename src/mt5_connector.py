@@ -226,7 +226,7 @@ def place_order(symbol, lot, trade_type, sl_value, tp_value, notifier=None):
     if notifier: notifier.send_message(f"<b>[LỆNH MỚI] {trade_type} {symbol}</b>\nLot: {lot}\nGiá vào: {result.price:.2f}\nSL: {sl:.2f}\nTP: {tp:.2f}")
     return True
 
-def modify_position_sltp(position_ticket, new_sl, new_tp, notifier=None):
+def modify_position_sltp(position_ticket, new_sl, new_tp, notifier=None, comment=None):
     """Sửa đổi SL/TP của một lệnh đang mở."""
     # Đảm bảo kết nối trước khi thực hiện hành động
     if not _ensure_mt5_connection():
@@ -240,6 +240,9 @@ def modify_position_sltp(position_ticket, new_sl, new_tp, notifier=None):
         "tp": new_tp,
         "magic": 234002,
     }
+    # Thêm comment nếu có
+    if comment:
+        request["comment"] = comment
     
     result = mt5.order_send(request)
     if result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -247,8 +250,8 @@ def modify_position_sltp(position_ticket, new_sl, new_tp, notifier=None):
         if notifier: notifier.send_message(f"<b>[LỖI] Sửa SL/TP lệnh #{position_ticket} thất bại!</b>\nLỗi: {result.comment}")
         return False
 
-    print(f"*** Sửa lệnh #{position_ticket} thành công | SL mới: {new_sl} | TP mới: {new_tp} ***")
-    if notifier: notifier.send_message(f"<b>[CẬP NHẬT LỆNH] Lệnh #{position_ticket}</b>\nSL mới: {new_sl}\nTP mới: {new_tp}")
+    print(f"*** Sửa lệnh #{position_ticket} thành công | SL mới: {new_sl:.2f} | TP mới: {new_tp:.2f} | Lý do: {comment} ***")
+    if notifier: notifier.send_message(f"<b>[CẬP NHẬT LỆNH] Lệnh #{position_ticket}</b>\nSL mới: {new_sl:.2f}\nTP mới: {new_tp:.2f}\nLý do: {comment}")
     return True
 
 def close_position(position, notifier=None, comment="Closed by bot"):
@@ -375,14 +378,21 @@ if __name__ == '__main__':
     if not config:
         print("Lỗi: Không thể tải tệp cấu hình 'config.json'.")
     else:
+        # Lấy thông tin đăng nhập và giao dịch từ config
         mt5_credentials = config.get('mt5_credentials', {})
+        trading_params = config.get('trading', {})
         login = mt5_credentials.get('login')
         password = mt5_credentials.get('password')
         server = mt5_credentials.get('server')
+        symbol_to_trade = trading_params.get('symbol', 'XAUUSD') # Lấy symbol từ config
 
         if connect_to_mt5(login, password, server):
-            print("\n--- Kết nối thành công. Tiến hành đặt lệnh thử nghiệm ---")
-            place_order(symbol="XAUUSD", lot=0.01, trade_type="BUY", sl_value=10.0, tp_value=20.0)
+            print(f"\n--- Kết nối thành công. Tiến hành đặt lệnh thử nghiệm cho {symbol_to_trade} ---")
+            
+            # Thực hiện lệnh BUY 0.01 lot theo yêu cầu
+            # SL và TP được đặt ở mức 10 và 20 giá để kiểm tra
+            place_order(symbol=symbol_to_trade, lot=0.01, trade_type="BUY", sl_value=10.0, tp_value=20.0, notifier=None)
+            
             mt5.shutdown()
             print("\nĐã ngắt kết nối MT5.")
         else:

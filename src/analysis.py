@@ -213,74 +213,95 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
     - Execution timeframe: M5
     - Trend timeframe: M15
     """
-    required_tfs = ['m1', 'm5', 'm15']
-    if not all(tf in timeframes_data for tf in required_tfs):
-        print("Lỗi: Không cung cấp đủ dữ liệu cho các khung thời gian M1, M5, M15.")
+    required_tfs = ['m1', 'm5', 'm15', 'm30', 'h1']
+    if not all(tf in timeframes_data for tf in ['m1', 'm5', 'm15']):
+        print("Lỗi: Thiếu dữ liệu M1, M5, hoặc M15.")
         return None
 
     m1_df = timeframes_data['m1'].copy()
-    m5_df = timeframes_data['m5'].copy()
-    m15_df = timeframes_data['m15'].copy()
+    m1_df.columns = [col.upper() for col in m1_df.columns]
 
-    # --- 1. Tính toán xu hướng trên M15 ---
-    print("Đang tính xu hướng trên M15...")
-    m15_df.columns = [col.lower() for col in m15_df.columns]
-    m15_ema_200 = ta.ema(m15_df['close'], length=200)
-    # Add M15 EMA 34 and 89 for the new strategy
-    m15_df['M15_EMA_34'] = ta.ema(m15_df['close'], length=34)
-    m15_df['M15_EMA_89'] = ta.ema(m15_df['close'], length=89)
+    # --- 1. Hợp nhất tất cả các khung thời gian vào M1 ---
+    print("Đang hợp nhất các khung thời gian...")
+    merged_df = m1_df.copy()
 
-    # Sửa lỗi logic: So sánh giá đóng cửa của mỗi nến với giá trị EMA tương ứng
-    # thay vì so sánh với giá đóng cửa cuối cùng.
-    m15_df['M15_TREND_EMA200'] = np.where(m15_df['close'] > m15_ema_200, 1, -1)
-    # Xử lý các giá trị NaN ở đầu
-    m15_df['M15_TREND_EMA200'] = m15_df['M15_TREND_EMA200'].fillna(0)
-    # Resample all necessary M15 indicators
-    m15_indicators_resampled = m15_df[['M15_TREND_EMA200', 'M15_EMA_34', 'M15_EMA_89']].resample('1min').ffill()
-    
-    # --- Thêm chỉ báo xu hướng từ H1 và M30 ---
-    all_htf_features = [m15_indicators_resampled]
-    
-    if 'h1' in timeframes_data:
-        print("Đang tính xu hướng trên H1...")
-        h1_df = timeframes_data['h1'].copy()
-        h1_df.columns = [col.lower() for col in h1_df.columns]
-        h1_df['H1_TREND'] = np.where(h1_df['close'] > ta.ema(h1_df['close'], length=200), 1, -1)
-        all_htf_features.append(h1_df[['H1_TREND']].resample('1min').ffill())
+    for tf in ['m5', 'm15', 'm30', 'h1', 'h4']: # Thêm 'h4' vào đây
+        if tf in timeframes_data:
+            tf_df = timeframes_data[tf].copy()
+            # Đổi tên cột để thêm hậu tố timeframe
+            tf_df.columns = [f"{col.upper()}_{tf.upper()}" for col in tf_df.columns]
+            # Join và ffill
+            merged_df = merged_df.join(tf_df.reindex(merged_df.index, method='ffill'))
 
-    if 'm30' in timeframes_data:
-        print("Đang tính xu hướng trên M30...")
-        m30_df = timeframes_data['m30'].copy()
-        m30_df.columns = [col.lower() for col in m30_df.columns]
-        m30_df['M30_TREND'] = np.where(m30_df['close'] > ta.ema(m30_df['close'], length=200), 1, -1)
-        all_htf_features.append(m30_df[['M30_TREND']].resample('1min').ffill())
+    # --- 2. Tính toán tất cả các chỉ báo trên DataFrame đã hợp nhất ---
+    print("Đang tính toán các chỉ báo...")
 
-    # --- 2. Tính toán các chỉ báo trên M5 ---
-    print("Đang tính các chỉ báo EMA trên M5...")
-    m5_df.columns = [col.lower() for col in m5_df.columns]
-    
-    # Lấy tham số EMA từ config, nếu không có thì dùng mặc định
+    # Lấy tham số từ config
     ema_params = strategy_params.get('ScalpingEmaCrossoverStrategy', {})
     ema_fast_len = ema_params.get('ema_fast_len', 9)
     ema_slow_len = ema_params.get('ema_slow_len', 20)
-    
-    # Tính toán cả EMA và RSI
-    m5_df.ta.ema(length=ema_fast_len, append=True, col_names=(f'M5_EMA_{ema_fast_len}',))
-    m5_df.ta.ema(length=ema_slow_len, append=True, col_names=(f'M5_EMA_{ema_slow_len}',))
-    m5_df.ta.rsi(length=14, append=True, col_names=('RSI_14',))
-    
-    m5_indicators = m5_df[[f'M5_EMA_{ema_fast_len}', f'M5_EMA_{ema_slow_len}', 'RSI_14']].resample('1min').ffill()
 
-    # --- 3. Hợp nhất tất cả dữ liệu vào khung M1 ---
-    print("Đang hợp nhất dữ liệu...")
-    # Đảm bảo các cột của m1_df là chữ hoa để nhất quán
-    m1_df.columns = [col.upper() for col in m1_df.columns]
-    
-    merged_df = pd.concat([m1_df] + all_htf_features + [m5_indicators], axis=1)
+    # Tính toán chỉ báo trên dữ liệu đã được ffill từ khung thời gian tương ứng
+    merged_df[f'M5_EMA_{ema_fast_len}'] = ta.ema(merged_df['CLOSE_M5'], length=ema_fast_len)
+    merged_df[f'M5_EMA_{ema_slow_len}'] = ta.ema(merged_df['CLOSE_M5'], length=ema_slow_len)
+    merged_df['RSI_14'] = ta.rsi(merged_df['CLOSE_M5'], length=14)
 
-    # --- 4. Dọn dẹp dữ liệu ---
-    merged_df.ffill(inplace=True)
+    # Lấy tham số cho Bollinger Bands từ config
+    bb_params = strategy_params.get('BollingerBandMeanReversionStrategy', {})
+    bb_length = bb_params.get('bb_length', 20)
+    bb_std_dev = bb_params.get('bb_std_dev', 2)
+    # Tính toán cả Bollinger Bands và Bollinger Bandwidth
+    bbands_indicator = ta.bbands(close=merged_df['CLOSE_M5'], length=bb_length, std=bb_std_dev)
+    if bbands_indicator is not None and not bbands_indicator.empty:
+        merged_df = merged_df.join(bbands_indicator)
+
+    merged_df['M15_EMA_34'] = ta.ema(merged_df['CLOSE_M15'], length=34)
+    merged_df['M15_EMA_89'] = ta.ema(merged_df['CLOSE_M15'], length=89)
+    m15_ema_200 = ta.ema(merged_df['CLOSE_M15'], length=200)
+    merged_df['M15_TREND_EMA200'] = np.where(merged_df['CLOSE_M15'] > m15_ema_200, 1, -1)
+    
+    # Add all available Candlestick Patterns to the merged DataFrame
+    merged_df.ta.cdl_pattern(name="all", append=True)
+
+    if 'CLOSE_M30' in merged_df.columns:
+        m30_ema_200 = ta.ema(merged_df['CLOSE_M30'], length=200)
+        merged_df['M30_TREND'] = np.where(merged_df['CLOSE_M30'] > m30_ema_200, 1, -1)
+
+    if 'CLOSE_H1' in merged_df.columns:
+        h1_ema_200 = ta.ema(merged_df['CLOSE_H1'], length=200)
+        merged_df['H1_EMA_34'] = ta.ema(merged_df['CLOSE_H1'], length=34)
+        merged_df['H1_EMA_89'] = ta.ema(merged_df['CLOSE_H1'], length=89)
+        merged_df['H1_TREND'] = np.where(merged_df['CLOSE_H1'] > h1_ema_200, 1, -1)
+
+    if 'CLOSE_H4' in merged_df.columns:
+        h4_ema_200 = ta.ema(merged_df['CLOSE_H4'], length=200)
+        merged_df['H4_EMA_34'] = ta.ema(merged_df['CLOSE_H4'], length=34)
+        merged_df['H4_EMA_89'] = ta.ema(merged_df['CLOSE_H4'], length=89)
+        merged_df['H4_TREND'] = np.where(merged_df['CLOSE_H4'] > h4_ema_200, 1, -1)
+        
+    # --- BỔ SUNG TÍNH TOÁN ADX CHO M15 FILTER ---
+    # Lấy adx_length từ config, nếu không có thì lấy trong M15FilteredScalpingStrategy, mặc định là 14
+    m15_filter_params = strategy_params.get('M15FilteredScalpingStrategy', {})
+    adx_length = m15_filter_params.get('adx_length', 14)
+    adx_col_name = f'ADX_{adx_length}'
+    adx_m15_col_name = f'ADX_{adx_length}_M15'
+    
+    if 'HIGH_M15' in merged_df.columns and 'LOW_M15' in merged_df.columns and 'CLOSE_M15' in merged_df.columns:
+        print(f"Calculating {adx_col_name} on M15 data...")
+        adx_indicator = ta.adx(high=merged_df['HIGH_M15'], low=merged_df['LOW_M15'], close=merged_df['CLOSE_M15'], length=adx_length)
+        if adx_col_name in adx_indicator.columns:
+            merged_df[adx_m15_col_name] = adx_indicator[adx_col_name]
+
+    # --- 3. Dọn dẹp dữ liệu ---
+    # Dọn dẹp các cột OHLC không cần thiết từ các khung thời gian cao hơn
+    cols_to_drop = [col for col in merged_df.columns if ('_M5' in col or '_M15' in col or '_M30' in col or '_H1' in col or '_H4' in col) and ('OPEN' in col or 'HIGH' in col or 'LOW' in col)]
+    merged_df.drop(columns=cols_to_drop, inplace=True)
+
     merged_df.dropna(inplace=True)
 
     print("Chuẩn bị dữ liệu scalping hoàn tất.")
     return merged_df
+
+    # --- PHẦN CODE CŨ BỊ XÓA ---
+    # ... (Toàn bộ logic cũ từ dòng 270 đến 318 đã được thay thế)
+    

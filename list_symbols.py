@@ -1,23 +1,20 @@
 
 import MetaTrader5 as mt5
-import json
 import sys
+import os
+
+# Thêm thư mục src vào sys.path để có thể import từ config_manager
+# Lấy đường dẫn đến thư mục gốc của dự án (nơi chứa file list_symbols.py)
+project_root = os.path.dirname(os.path.abspath(__file__))
+src_path = os.path.join(project_root, 'src')
+if src_path not in sys.path:
+    sys.path.append(src_path)
+
+from config_manager import get_config
 
 # Fix Unicode errors on Windows
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
-
-def get_config():
-    """Tải cấu hình từ tệp config.json."""
-    try:
-        with open('configs/config.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        print("Lỗi: Không tìm thấy tệp 'configs/config.json'.")
-        return None
-    except json.JSONDecodeError:
-        print("Lỗi: Tệp 'configs/config.json' không phải là tệp JSON hợp lệ.")
-        return None
 
 def main():
     """Kết nối MT5 và liệt kê tất cả các symbol."""
