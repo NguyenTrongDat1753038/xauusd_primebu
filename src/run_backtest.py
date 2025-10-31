@@ -6,7 +6,10 @@ from data_loader import load_csv_data
 from config_manager import get_config
 from analysis import prepare_scalping_data
 from backtester import Backtester
-from m15_filtered_scalping_strategy import M15FilteredScalpingStrategy
+# Import tất cả các chiến lược có thể chạy để backtest
+from strategies import MultiTimeframeEmaStrategy, PriceActionSRStrategy, ScalpingEmaCrossoverStrategy
+from m15_filtered_scalping_strategy import M15FilteredScalpingStrategy # Chiến lược chính
+from combined_strategy import CombinedScalpingStrategy
 
 def run_final_backtest():
     """
@@ -56,7 +59,7 @@ def run_final_backtest():
             return # Stop if index is not sorted
 
     # --- 2. Filter Data by Date ---
-    start_date = "2025-05-01"
+    start_date = "2025-10-01"
     end_date = "2025-10-30"
     
     print(f"Filtering data from {start_date} to {end_date}...")
@@ -72,15 +75,35 @@ def run_final_backtest():
     print("Initializing strategy and backtester with OPTIMIZED parameters...")
 
     # Load parameters from config file for consistency
-    strategy_params = config.get('strategy', {}).get('M15FilteredScalpingStrategy', {})
+    strategy_config = config.get('strategy', {})
     trading_params = config.get('trading', {})
 
-    if not strategy_params or not trading_params:
+    if not strategy_config or not trading_params:
         print("Error: Strategy or trading parameters are missing in config.json")
         return
 
-    strategy = M15FilteredScalpingStrategy(strategy_params)
+    # --- Logic lựa chọn chiến lược động ---
+    active_strategy_name = strategy_config.get('active_strategy', 'M15FilteredScalpingStrategy')
+    specific_strategy_params = strategy_config.get(active_strategy_name, {})
+    
+    strategy = None
+    if active_strategy_name == 'M15FilteredScalpingStrategy':
+        strategy = M15FilteredScalpingStrategy(specific_strategy_params)
+    elif active_strategy_name == 'MultiTimeframeEmaStrategy':
+        strategy = MultiTimeframeEmaStrategy(specific_strategy_params)
+    elif active_strategy_name == 'CombinedScalpingStrategy':
+        # Combined strategy cần toàn bộ config của các strategy con
+        strategy = CombinedScalpingStrategy(strategy_config)
+    # Thêm các chiến lược khác vào đây nếu cần
+    # elif active_strategy_name == 'PriceActionSRStrategy':
+    #     strategy = PriceActionSRStrategy(specific_strategy_params)
+    
+    if strategy is None:
+        print(f"Error: Active strategy '{active_strategy_name}' is not supported for backtesting in this script.")
+        return
 
+    print(f"== Active Strategy for Backtest: {active_strategy_name} ==")
+    
     # --- 3. Prepare and Analyze Data ---
     print("Preparing data and calculating indicators for scalping strategy...")
     analysis_data = prepare_scalping_data(timeframes_data, config.get('strategy', {}))

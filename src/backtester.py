@@ -1,5 +1,6 @@
 import pandas as pd
 import math
+import uuid
 from datetime import datetime
 
 class Backtester:
@@ -23,8 +24,30 @@ class Backtester:
         self.min_position_size = trading_params.get('min_position_size', 0.01) # Minimum lot size
         self.max_position_size = trading_params.get('max_position_size', 1.0) # Maximum lot size
         self.min_sl_distance_points = trading_params.get('min_sl_distance_points', 0.5) # Default to 0.5 USD for XAUUSD
-        self.target_sl_distance_points = trading_params.get('target_sl_distance_points', 4.0) # Target SL distance for safer lot sizing
+        self.target_sl_distance_points = trading_params.get('target_sl_distance_points', 4.0)
         
+        # Dynamic Risk Limits per trade (as a percentage of balance)
+        self.min_risk_percent = trading_params.get('min_risk_percent', 1.5) # Min risk per trade
+        self.max_risk_percent = trading_params.get('max_risk_percent', 4.0) # Max risk per trade (ceiling)
+        
+        # Drawdown Reducer
+        self.drawdown_reducer_tiers = sorted(trading_params.get('drawdown_reducer_tiers', []), key=lambda x: x['threshold_percent'], reverse=True)
+
+        # Circuit Breaker
+        self.cb_config = trading_params.get('circuit_breaker', {'enabled': False})
+        self.use_circuit_breaker = self.cb_config.get('enabled', False)
+        self.daily_loss_limit_percent = self.cb_config.get('daily_loss_limit_percent', 8.0)
+        self.daily_loss_limit = 0 # Sẽ được tính toán lại mỗi ngày
+        self.consecutive_loss_limit = self.cb_config.get('consecutive_loss_limit', 3)
+        self.cooldown_signals_to_skip = self.cb_config.get('consecutive_loss_cooldown_signals', 2)
+
+        # Time Filter / Session Scoring
+        self.time_filter_config = trading_params.get('time_filter', {'enabled': False})
+        self.use_time_filter = self.time_filter_config.get('enabled', False)
+        self.adx_override_threshold = self.time_filter_config.get('adx_override_threshold', 35.0)
+        self.sessions = self.time_filter_config.get('sessions', [])
+        self.default_multiplier = self.time_filter_config.get('default_multiplier', 1.0)
+
         # Breakeven Stop
         self.use_breakeven_stop = trading_params.get('use_breakeven_stop', False)
         self.be_trigger = trading_params.get('breakeven_trigger_points', 5.0)
@@ -34,6 +57,8 @@ class Backtester:
         self.use_trailing_stop = trading_params.get('use_trailing_stop', False)
         self.trailing_trigger_step = trading_params.get('trailing_trigger_step', 5.0)
         self.trailing_profit_step = trading_params.get('trailing_profit_step', 1.0)
+        self.use_atr_based_breakeven = trading_params.get('use_atr_based_breakeven', False)
+        self.be_atr_multiplier = trading_params.get('breakeven_atr_trigger_multiplier', 1.0)
 
         # Tiered Trailing Stop (Advanced)
         self.use_tiered_trailing_stop = trading_params.get('use_tiered_trailing_stop', False)
@@ -41,12 +66,9 @@ class Backtester:
         if self.use_tiered_trailing_stop:
             self.tiered_trailing_stops.sort(key=lambda x: x['trigger'], reverse=True)
 
-        # Take Profit Extension
-        self.use_tp_extension = trading_params.get('use_tp_extension', False)
-        self.tpe_trigger = trading_params.get('tp_extension_trigger_points', 8.0)
-        self.tpe_factor = trading_params.get('tp_extension_factor', 1.2)
-        self.tpe_sl_target = trading_params.get('tp_extension_sl_target_points', 1.6)
-
+        # Multi-Tier Take Profit (Advanced)
+        self.multi_tier_tp_config = trading_params.get('multi_tier_tp', {'enabled': False})
+ 
         # Candlestick Exit
         self.use_candlestick_exit = trading_params.get('use_candlestick_exit', False)
         self.bullish_reversal_patterns = ['CDL_HAMMER', 'CDL_INVERTEDHAMMER', 'CDL_PIERCING', 'CDL_MORNINGSTAR', 'CDL_ENGULFING']
@@ -60,6 +82,15 @@ class Backtester:
         self.balance = self.initial_balance
         self.trades = []
         self.open_trades = []
+        self.peak_equity = self.initial_balance
+        self.equity_curve = [self.initial_balance]
+        
+        # State for Circuit Breaker
+        self.consecutive_losses = 0
+        self.daily_pnl = 0.0
+        self.current_day = None
+        self.cooldown_counter = 0
+        self.circuit_breaker_active = False
 
     def run(self):
         if self.verbose:
@@ -72,6 +103,22 @@ class Backtester:
             current_bar = self.data.iloc[i]
             current_timestamp = current_bar.name
             current_slice = self.data.iloc[:i+1]
+
+            # --- Circuit Breaker: Daily Loss Limit Check ---
+            # Reset daily PnL at the start of a new day
+            if self.current_day != current_timestamp.date():
+                self.current_day = current_timestamp.date()
+                self.daily_pnl = 0.0
+                # Tính toán lại giới hạn lỗ hàng ngày dựa trên số dư hiện tại
+                self.daily_loss_limit = self.balance * (self.daily_loss_limit_percent / 100.0)
+                if self.circuit_breaker_active:
+                    if self.verbose: print(f"[{current_timestamp}] New day. Resetting daily loss limit circuit breaker.")
+                    self.circuit_breaker_active = False
+
+            if self.use_circuit_breaker and self.circuit_breaker_active:
+                # If daily loss limit was hit, skip all trading for the rest of the day
+                self._check_open_trades(current_slice) # Still need to manage open trades
+                continue
 
             # --- Weekend Management Logic ---
             # Reset flag on Monday
@@ -103,14 +150,60 @@ class Backtester:
             result = self.strategy.get_signal(current_slice)
             signal, dynamic_sl, dynamic_tp = (result, None, None) if isinstance(result, int) else result
             
+            # --- Circuit Breaker: Consecutive Loss Cooldown ---
+            if self.use_circuit_breaker and self.cooldown_counter > 0 and signal != 0:
+                if self.verbose: print(f"[{current_timestamp}] Consecutive loss cooldown active. Skipping signal. ({self.cooldown_counter} more to skip)")
+                self.cooldown_counter -= 1
+                signal = 0 # Ignore the signal
+
+            # --- Time-Based Session Filter ---
+            session_multiplier = 1.0
+            session_name = "Default"
+            if self.use_time_filter and signal != 0:
+                current_hour = current_timestamp.hour
+                # ADX Override check
+                current_adx = current_bar.get('ADX_14_M15', current_bar.get('ADX_14', 0))
+                if current_adx > self.adx_override_threshold:
+                    session_multiplier = 1.0
+                    session_name = f"ADX_Override ({current_adx:.1f})"
+                else:
+                    found_session = False
+                    for session in self.sessions:
+                        start, end = session['start_hour'], session['end_hour']
+                        # Handle overnight sessions (e.g., 22:00 - 01:00)
+                        if start > end:
+                            if current_hour >= start or current_hour < end:
+                                session_multiplier = session['multiplier']
+                                session_name = session['name']
+                                found_session = True
+                                break
+                        elif start <= current_hour < end:
+                            session_multiplier = session['multiplier']
+                            session_name = session['name']
+                            found_session = True
+                            break
+                    if not found_session:
+                        session_multiplier = self.default_multiplier
+                        session_name = "Default_Hours"
+
+                # --- NEW: Special logic for 'Avoid' hours ---
+                # Only skip if ADX is also low, otherwise just reduce size.
+                if "Avoid" in session_name and current_adx < 20:
+                     if self.verbose: print(f"[{current_timestamp}] Skipping trade in '{session_name}' due to low ADX ({current_adx:.1f} < 20).")
+                     signal = 0 # Skip the trade entirely
+
+                # General skip for any session with multiplier 0 or less
+                elif session_multiplier <= 0:
+                    signal = 0
+
             if signal != 0 and len(self.open_trades) < self.max_open_trades:
-                self._open_trade(signal, current_bar, dynamic_sl, dynamic_tp)
+                self._open_trade(signal, current_bar, dynamic_sl, dynamic_tp, session_multiplier, session_name)
 
         if self.verbose:
             print("Backtest finished.")
             self.generate_report()
 
-    def _open_trade(self, signal, current_bar, dynamic_sl=None, dynamic_tp=None):
+    def _open_trade(self, signal, current_bar, dynamic_sl=None, dynamic_tp=None, session_multiplier=1.0, session_name="Default"):
         entry_price = current_bar['CLOSE']
         
         # Determine initial Stop Loss based on signal and dynamic/fixed values
@@ -146,7 +239,28 @@ class Backtester:
         final_stop_loss = stop_loss # Start with the strategy's SL (potentially adjusted by min_sl_distance_points)
 
         if self.use_dynamic_sizing:
-            risk_amount = self.balance * (self.risk_percent / 100.0)
+            # --- Drawdown Reducer Logic ---
+            current_equity = self.balance
+            drawdown_percent = (self.peak_equity - current_equity) / self.peak_equity * 100 if self.peak_equity > 0 else 0
+            
+            risk_multiplier = 1.0
+            for tier in self.drawdown_reducer_tiers:
+                if drawdown_percent >= tier['threshold_percent']:
+                    risk_multiplier = tier['factor']
+                    break # Apply the highest applicable tier
+
+            # --- NEW: Dynamic Risk Amount Calculation based on % Balance ---
+            # 1. Calculate target risk amount
+            target_risk_amount = self.balance * (self.risk_percent / 100.0) * risk_multiplier * session_multiplier
+
+            # 2. Calculate min and max risk boundaries based on balance
+            min_risk_amount = self.balance * (self.min_risk_percent / 100.0)
+            max_risk_amount = self.balance * (self.max_risk_percent / 100.0)
+
+            # 3. Clamp the target risk amount within the min/max boundaries
+            risk_amount = max(min_risk_amount, min(target_risk_amount, max_risk_amount))
+            if self.verbose:
+                print(f"Info: Session='{session_name}' (x{session_multiplier}). Risk amount clamped to ${risk_amount:.2f} (Min: ${min_risk_amount:.2f}, Max: ${max_risk_amount:.2f})")
             
             # --- New Logic: Calculate two potential lot sizes and choose the safer one ---
 
@@ -198,17 +312,31 @@ class Backtester:
             'take_profit': take_profit,
             'position_size': position_size, # Store calculated position size
             'initial_tp': take_profit, # Store for extension calculation
+            'atr_at_entry': current_bar.get('ATRR_14', current_bar.get('ATRR_14_M15')), # Store ATR at entry
             'entry_time': current_bar.name,
             'status': 'open',
             'breakeven_applied': False,
             'tp_extended': False,
             'trailing_steps': 0, # Initialize trailing stop counter
-            'sl_reason': 'Initial'
+            'sl_reason': 'Initial',
+            # --- NEW: Fields for Partial Close ---
+            'trade_id': str(uuid.uuid4()), # Unique ID for the trade group
+            'original_position_size': position_size,
+            'tier': 0, # Initial tier
+            'partial_closes': [],
+            'peak_profit_runner': 0.0,
+            # --- NEW: Logging for new features ---
+            'dd_multiplier': risk_multiplier,
+            'consecutive_losses_at_entry': self.consecutive_losses,
+            'circuit_breaker_active': self.circuit_breaker_active,
+            'session_name': session_name,
+            'session_multiplier': session_multiplier
         }
         self.open_trades.append(trade)
 
     def _check_open_trades_old(self, current_slice):
         # This method should only manage existing open trades.
+        # It's kept for reference but the new logic is in _check_open_trades
         # Lot size calculation should happen in _open_trade.
         # The previous code block for position_size calculation was misplaced here.
         pass
@@ -218,15 +346,94 @@ class Backtester:
         # Thay vì đóng lệnh ngay, chúng ta thu thập thông tin để đóng sau
         # Điều này tránh việc một lệnh bị đóng nhiều lần với các lý do khác nhau trong cùng một tick
         trades_to_process_for_closure = []
+        newly_created_trades = []
 
-        for trade in self.open_trades:
+        # Create a copy to iterate over, as we might modify the list
+        for trade in list(self.open_trades):
+            # --- Multi-Tier TP Logic ---
+            if self.multi_tier_tp_config.get('enabled', False) and trade['status'] == 'open':
+                initial_risk_distance = abs(trade['entry_price'] - trade['stop_loss'])
+                if initial_risk_distance <= 0: continue
+
+                current_profit_distance = 0
+                if trade['type'] == 'BUY':
+                    current_profit_distance = current_bar['HIGH'] - trade['entry_price']
+                else: # SELL
+                    current_profit_distance = trade['entry_price'] - current_bar['LOW']
+                
+                current_rr = current_profit_distance / initial_risk_distance if initial_risk_distance > 0 else 0
+
+                # Check tiers in order
+                tiers = self.multi_tier_tp_config.get('tiers', [])
+                next_tier_index = trade.get('tier', 0)
+
+                if next_tier_index < len(tiers):
+                    tier_config = tiers[next_tier_index]
+                    if current_rr >= tier_config['trigger_rr']:
+                        if self.verbose:
+                            print(f"[{current_bar.name}] Trade {trade['trade_id']} reached {tier_config['name']} at R:R {current_rr:.2f}. Triggering partial close.")
+
+                        # 1. Calculate size to close
+                        size_to_close = trade['original_position_size'] * (tier_config['close_percent'] / 100.0)
+                        size_to_close = round(size_to_close / 0.01) * 0.01 # Round to nearest 0.01 lot
+
+                        if size_to_close > 0 and trade['position_size'] > size_to_close:
+                            # Create a closed trade record for the partial close
+                            partial_close_trade = trade.copy()
+                            partial_close_trade['position_size'] = size_to_close
+                            
+                            exit_price = trade['entry_price'] + (initial_risk_distance * tier_config['trigger_rr']) if trade['type'] == 'BUY' else trade['entry_price'] - (initial_risk_distance * tier_config['trigger_rr'])
+                            self._close_trade(partial_close_trade, exit_price, current_bar.name, reason=f"Partial Close {tier_config['name']}")
+                            
+                            # Update the original (runner) trade
+                            trade['position_size'] -= size_to_close
+                            trade['partial_closes'].append({'tier': tier_config['name'], 'size': size_to_close, 'price': exit_price})
+
+                        # 2. Update SL/TP for the remaining position
+                        if tier_config.get('move_sl_to_breakeven', False):
+                            new_sl = trade['entry_price'] + self.be_extra if trade['type'] == 'BUY' else trade['entry_price'] - self.be_extra
+                            trade['stop_loss'] = new_sl
+                            trade['sl_reason'] = f"BE after {tier_config['name']}"
+
+                        if 'move_sl_to_rr' in tier_config:
+                            sl_rr = tier_config['move_sl_to_rr']
+                            new_sl = trade['entry_price'] + (initial_risk_distance * sl_rr) if trade['type'] == 'BUY' else trade['entry_price'] - (initial_risk_distance * sl_rr)
+                            trade['stop_loss'] = new_sl
+                            trade['sl_reason'] = f"SL to {sl_rr}R after {tier_config['name']}"
+
+                        if 'new_tp_rr_multiplier' in tier_config:
+                            new_tp_distance = initial_risk_distance * tier_config['new_tp_rr_multiplier']
+                            trade['take_profit'] = trade['entry_price'] + new_tp_distance if trade['type'] == 'BUY' else trade['entry_price'] - new_tp_distance
+                        
+                        # Switch to trailing stop mode if configured
+                        if 'trailing_stop_atr_multiplier' in tier_config:
+                            trade['take_profit'] = 0 # Disable fixed TP
+                            trade['trailing_atr_multiplier'] = tier_config['trailing_stop_atr_multiplier']
+                            trade['sl_reason'] = f"ATR Trail after {tier_config['name']}"
+
+                        trade['tier'] += 1 # Move to the next tier
+
+            # --- Trailing Stop Logic for Runners ---
+            if trade.get('trailing_atr_multiplier', 0) > 0:
+                atr = current_bar.get('ATRR_14', 0)
+                if atr > 0:
+                    atr_sl_distance = atr * trade['trailing_atr_multiplier']
+                    if trade['type'] == 'BUY':
+                        new_sl = current_bar['HIGH'] - atr_sl_distance
+                        if new_sl > trade['stop_loss']:
+                            trade['stop_loss'] = new_sl
+                    else: # SELL
+                        new_sl = current_bar['LOW'] + atr_sl_distance
+                        if new_sl < trade['stop_loss']:
+                            trade['stop_loss'] = new_sl
+
             # --- Dynamic Exit Logic ---
             if trade['type'] == 'BUY':
                 current_profit = current_bar['HIGH'] - trade['entry_price']
                 
                 # NOTE: The order of these checks matters. Choose one primary stop-loss management strategy.
                 # Tiered Trailing Stop (Advanced)
-                if self.use_tiered_trailing_stop:
+                if self.use_tiered_trailing_stop and not self.multi_tier_tp_config.get('enabled'):
                     for tier in self.tiered_trailing_stops:
                         if current_profit >= tier['trigger']:
                             new_sl = trade['entry_price'] + tier['sl_add']
@@ -236,7 +443,7 @@ class Backtester:
                             break # Apply highest applicable tier and stop
 
                 # Linear Trailing Stop
-                elif self.use_trailing_stop and self.trailing_trigger_step > 0:
+                elif self.use_trailing_stop and not self.multi_tier_tp_config.get('enabled', False) and self.trailing_trigger_step > 0:
                     profit_steps = math.floor(current_profit / self.trailing_trigger_step)
                     if profit_steps > trade['trailing_steps']:
                         sl_improvement = profit_steps * self.trailing_profit_step
@@ -247,39 +454,35 @@ class Backtester:
                         trade['trailing_steps'] = profit_steps
 
                 # Breakeven Stop (Simple)
-                elif self.use_breakeven_stop and not trade['breakeven_applied'] and current_profit >= self.be_trigger:
-                    new_sl = trade['entry_price'] + self.be_extra
-                    print(f"[{current_bar.name}] Applying Breakeven for BUY trade #{self.trades.index(trade) if trade in self.trades else 'new'}. New SL: {new_sl}")
-                    if new_sl > trade['stop_loss']:
+                elif self.use_breakeven_stop and not trade['breakeven_applied'] and not self.multi_tier_tp_config.get('enabled', False):
+                    breakeven_trigger_profit = self.be_trigger # Default to fixed points
+                    if self.use_atr_based_breakeven and trade.get('atr_at_entry'):
+                        breakeven_trigger_profit = trade['atr_at_entry'] * self.be_atr_multiplier
+
+                    if current_profit >= breakeven_trigger_profit:
+                        new_sl = trade['entry_price'] + self.be_extra
+                        if self.verbose: print(f"[{current_bar.name}] Applying Breakeven for BUY trade. New SL: {new_sl}")
                         trade['stop_loss'] = new_sl
                         trade['sl_reason'] = 'Breakeven'
                     trade['breakeven_applied'] = True
-
-                # Take Profit Extension
-                if self.use_tp_extension and not trade['tp_extended'] and current_profit >= self.tpe_trigger:
-                    tp_range = abs(trade['initial_tp'] - trade['entry_price'])
-                    trade['take_profit'] = trade['entry_price'] + (tp_range * self.tpe_factor)
-                    new_sl = trade['entry_price'] + self.tpe_sl_target
-                    if new_sl > trade['stop_loss']:
-                        trade['stop_loss'] = new_sl
-                        trade['sl_reason'] = 'TP Extension'
-                    trade['tp_extended'] = True
+                
 
             else: # SELL
                 current_profit = trade['entry_price'] - current_bar['LOW']
 
                 # Tiered Trailing Stop (Advanced)
-                if self.use_tiered_trailing_stop:
+                if self.use_tiered_trailing_stop and not self.multi_tier_tp_config.get('enabled', False):
                     for tier in self.tiered_trailing_stops:
                         if current_profit >= tier['trigger']:
                             new_sl = trade['entry_price'] - tier['sl_add']
                             if new_sl < trade['stop_loss']:
+                                if self.verbose: print(f"[{current_bar.name}] Applying Tiered TS for SELL trade. New SL: {new_sl}")
                                 trade['stop_loss'] = new_sl
                                 trade['sl_reason'] = 'Tiered Trailing'
                             break
 
                 # Linear Trailing Stop
-                elif self.use_trailing_stop and self.trailing_trigger_step > 0:
+                elif self.use_trailing_stop and not self.multi_tier_tp_config.get('enabled', False) and self.trailing_trigger_step > 0:
                     profit_steps = math.floor(current_profit / self.trailing_trigger_step)
                     if profit_steps > trade['trailing_steps']:
                         sl_improvement = profit_steps * self.trailing_profit_step
@@ -290,24 +493,18 @@ class Backtester:
                         trade['trailing_steps'] = profit_steps
 
                 # Breakeven Stop (Simple)
-                elif self.use_breakeven_stop and not trade['breakeven_applied'] and current_profit >= self.be_trigger:
-                    new_sl = trade['entry_price'] - self.be_extra
-                    print(f"[{current_bar.name}] Applying Breakeven for SELL trade #{self.trades.index(trade) if trade in self.trades else 'new'}. New SL: {new_sl}")
-                    if new_sl < trade['stop_loss']:
+                elif self.use_breakeven_stop and not trade['breakeven_applied'] and not self.multi_tier_tp_config.get('enabled', False):
+                    breakeven_trigger_profit = self.be_trigger # Default to fixed points
+                    if self.use_atr_based_breakeven and trade.get('atr_at_entry'):
+                        breakeven_trigger_profit = trade['atr_at_entry'] * self.be_atr_multiplier
+
+                    if current_profit >= breakeven_trigger_profit:
+                        new_sl = trade['entry_price'] - self.be_extra
+                        if self.verbose: print(f"[{current_bar.name}] Applying Breakeven for SELL trade. New SL: {new_sl}")
                         trade['stop_loss'] = new_sl
                         trade['sl_reason'] = 'Breakeven'
                     trade['breakeven_applied'] = True
 
-                # Take Profit Extension
-                if self.use_tp_extension and not trade['tp_extended'] and current_profit >= self.tpe_trigger:
-                    tp_range = abs(trade['initial_tp'] - trade['entry_price'])
-                    trade['take_profit'] = trade['entry_price'] - (tp_range * self.tpe_factor)
-                    new_sl = trade['entry_price'] - self.tpe_sl_target
-                    if new_sl < trade['stop_loss']:
-                        trade['stop_loss'] = new_sl
-                        trade['sl_reason'] = 'TP Extension'
-                    trade['tp_extended'] = True
-            
             # --- Candlestick Reversal Exit ---
             if self.use_candlestick_exit:
                 if trade['type'] == 'BUY':
@@ -331,7 +528,7 @@ class Backtester:
                     trades_to_process_for_closure.append((trade, trade['stop_loss'], reason))
                     continue
                 # Chỉ kiểm tra TP nếu SL không bị chạm
-                elif current_bar['HIGH'] >= trade['take_profit'] and trade not in [t[0] for t in trades_to_process_for_closure]:
+                elif trade['take_profit'] > 0 and current_bar['HIGH'] >= trade['take_profit'] and trade not in [t[0] for t in trades_to_process_for_closure]:
                     trades_to_process_for_closure.append((trade, trade['take_profit'], "Take Profit"))
                     continue
             elif trade['type'] == 'SELL':
@@ -341,7 +538,7 @@ class Backtester:
                         reason = 'Stop Loss'
                     trades_to_process_for_closure.append((trade, trade['stop_loss'], reason))
                     continue
-                elif current_bar['LOW'] <= trade['take_profit'] and trade not in [t[0] for t in trades_to_process_for_closure]:
+                elif trade['take_profit'] > 0 and current_bar['LOW'] <= trade['take_profit'] and trade not in [t[0] for t in trades_to_process_for_closure]:
                     trades_to_process_for_closure.append((trade, trade['take_profit'], "Take Profit"))
                     continue
         
@@ -369,6 +566,28 @@ class Backtester:
         trade['pnl_currency'] = pnl_currency
         trade['exit_reason'] = reason
         self.trades.append(trade)
+        
+        # Update balance and equity curve
+        self.balance += pnl_currency
+        self.equity_curve.append(self.balance)
+        self.peak_equity = max(self.peak_equity, self.balance)
+        
+        # --- Circuit Breaker State Update ---
+        if self.use_circuit_breaker:
+            self.daily_pnl += pnl_currency
+            if pnl_currency > 0:
+                # Reset consecutive losses on a win
+                self.consecutive_losses = 0
+            else: # Loss
+                self.consecutive_losses += 1
+                # Check for consecutive loss trigger
+                if self.consecutive_losses >= self.consecutive_loss_limit:
+                    self.cooldown_counter = self.cooldown_signals_to_skip
+                    if self.verbose: print(f"[{exit_time}] TRIGGER: {self.consecutive_losses} consecutive losses. Activating cooldown, skipping next {self.cooldown_counter} signals.")
+            # Check for daily loss limit trigger
+            if self.daily_loss_limit > 0 and self.daily_pnl < -self.daily_loss_limit:
+                self.circuit_breaker_active = True
+                if self.verbose: print(f"[{exit_time}] TRIGGER: Daily loss limit of ${self.daily_loss_limit} hit (Current Daily PnL: ${self.daily_pnl:.2f}). Halting trading for the day.")
 
     def generate_report(self):
         print("\n--- Backtest Report ---")

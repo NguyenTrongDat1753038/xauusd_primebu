@@ -24,10 +24,11 @@ class MultiTimeframeEmaStrategy(BaseStrategy):
         self.volatility_threshold = params.get('volatility_threshold', 1.5) # e.g., 1.5 means 50% above average
         
         # SL/TP Multipliers
-        self.atr_sl_multiplier = params.get('atr_sl_multiplier', 2.0)
-        self.atr_tp_multiplier = params.get('atr_tp_multiplier', 4.0)
-        self.atr_sl_multiplier_high_vol = params.get('atr_sl_multiplier_high_vol', 3.0)
-        self.atr_tp_multiplier_high_vol = params.get('atr_tp_multiplier_high_vol', 6.0)
+        self.atr_sl_multiplier = params.get('atr_sl_multiplier', 1.5) # Suggestion: 1.5x ATR
+        self.atr_tp_multiplier = params.get('atr_tp_multiplier', 3.0) # Maintain 1:2 R:R
+        self.atr_sl_multiplier_high_vol = params.get('atr_sl_multiplier_high_vol', 2.5) # Wider for high vol
+        self.atr_tp_multiplier_high_vol = params.get('atr_tp_multiplier_high_vol', 5.0) # Maintain 1:2 R:R
+        self.use_candle_confirmation = params.get('use_candle_confirmation', True) # Allow disabling candle filter
 
 
     def get_signal(self, analyzed_data):
@@ -36,6 +37,9 @@ class MultiTimeframeEmaStrategy(BaseStrategy):
             
         latest = analyzed_data.iloc[-1]
         entry_price = latest['CLOSE']
+        atr = latest.get('ATRR_14', 0)
+        if atr <= 0: # Cannot calculate SL/TP without ATR
+            return 0, None, None
 
         # --- 1. Check Higher Timeframe Trend Alignment ---
         h1_trend = latest.get('H1_TREND', 0)
@@ -57,7 +61,6 @@ class MultiTimeframeEmaStrategy(BaseStrategy):
         is_trend_strong = latest.get('ADX_14', 0) > self.adx_threshold
 
         # --- 5. Volatility Regime Check ---
-        atr = latest.get('ATRR_14', 0)
         avg_atr = latest.get('ATRR_14_SMA_50', 0)
         
         is_high_vol = False
@@ -66,22 +69,30 @@ class MultiTimeframeEmaStrategy(BaseStrategy):
 
         # --- 6. Generate Signal & Calculate SL/TP ---
         signal = 0
-        if is_uptrend_aligned and m15_close_above_ema34 and is_bullish_candle and is_trend_strong:
+        # Check candle confirmation only if it's enabled
+        buy_candle_ok = is_bullish_candle if self.use_candle_confirmation else True
+        sell_candle_ok = is_bearish_candle if self.use_candle_confirmation else True
+
+        if is_uptrend_aligned and m15_close_above_ema34 and buy_candle_ok and is_trend_strong:
             signal = 1
-        elif is_downtrend_aligned and m15_close_below_ema34 and is_bearish_candle and is_trend_strong:
+        elif is_downtrend_aligned and m15_close_below_ema34 and sell_candle_ok and is_trend_strong:
             signal = -1
 
         if signal != 0:
             # Adaptive SL/TP based on volatility
-            if is_high_vol:
-                sl_multiplier = self.atr_sl_multiplier_high_vol
-                tp_multiplier = self.atr_tp_multiplier_high_vol
+            # --- NEW: Tiered ATR Stop Loss Logic ---
+            if atr < 2.0:
+                sl_multiplier = 1.5
+            elif 2.0 <= atr < 4.0:
+                sl_multiplier = 2.0
             else:
-                sl_multiplier = self.atr_sl_multiplier
-                tp_multiplier = self.atr_tp_multiplier
+                sl_multiplier = 2.5
 
-            sl_points = atr * sl_multiplier
-            tp_points = atr * tp_multiplier
+            # Maintain a consistent Risk:Reward ratio based on the SL multiplier
+            tp_multiplier = sl_multiplier * 2.0 # Example: Maintain 1:2 R:R
+            
+            sl_points = atr * sl_multiplier # This is now the distance in price, not pips
+            tp_points = atr * tp_multiplier # This is now the distance in price
 
             if signal == 1: # BUY
                 stop_loss = entry_price - sl_points
@@ -93,6 +104,7 @@ class MultiTimeframeEmaStrategy(BaseStrategy):
             return signal, stop_loss, take_profit
 
         return 0, None, None # No signal
+
 
 class MultiTimeframeEmaFibStrategy(BaseStrategy):
     """

@@ -31,8 +31,8 @@ class M15FilteredScalpingStrategy(BaseStrategy):
         self.bearish_candle_patterns = params.get('bearish_candle_patterns', ['CDL_HANGINGMAN', 'CDL_SHOOTINGSTAR', 'CDL_ENGULFING', 'CDL_EVENINGSTAR'])
         self.min_candle_confirmations = params.get('min_candle_confirmations', 1) # Số lượng mô hình nến tối thiểu để xác nhận
         self.adx_length = params.get('adx_length', 14) # Độ dài ADX
-        self.adx_trend_threshold = params.get('adx_trend_threshold', 25) # Ngưỡng ADX cho thị trường có xu hướng
-        self.adx_range_threshold = params.get('adx_range_threshold', 15) # Ngưỡng ADX cho thị trường đi ngang
+        self.adx_trend_threshold = params.get('adx_trend_threshold', 25) # Suggestion: Only trade when ADX > 25
+        self.adx_range_threshold = params.get('adx_range_threshold', 20) # Suggestion: Skip trades when ADX < 20
         self.bbw_threshold = params.get('bbw_threshold', 0.003) # Ngưỡng Bollinger Bandwidth để xác nhận thị trường đi ngang
 
         self.use_h1_trend_filter = params.get('use_h1_trend_filter', False)
@@ -150,7 +150,7 @@ class M15FilteredScalpingStrategy(BaseStrategy):
                    (scalping_signal == -1 and h4_trend != -1):
                     scalping_signal = 0 # Vô hiệu hóa tín hiệu
 
-        elif m15_adx < self.adx_range_threshold:
+        elif m15_adx <= self.adx_range_threshold:
             # Thị trường không có xu hướng, kiểm tra thêm điều kiện co thắt (squeeze)
             bb_length = self.mean_reversion_strategy.bb_length
             bb_std_dev = self.mean_reversion_strategy.bb_std_dev
