@@ -5,7 +5,7 @@ REM Duong dan den thu muc project
 set "PROJECT_PATH=d:\Code\XAU_Bot_Predict"
 
 REM Kich hoat moi truong ao (virtual environment)
-call "%PROJECT_PATH%\.venv\Scripts\activate.bat"
+call "%PROJECT_PATH%\ta_env\Scripts\activate.bat"
 
 REM Chay script Python.
 python "%PROJECT_PATH%\src\live_trader.py"

@@ -1,7 +1,0 @@
-pandas
-pandas-ta
-numpy
-mplfinance
-MetaTrader5
-python-telegram-bot
-tqdm
