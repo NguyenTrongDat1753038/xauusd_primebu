@@ -1,13 +1,8 @@
 
 import pandas as pd
 import math
+from .base_strategy import BaseStrategy
 
-class BaseStrategy:
-    def __init__(self, params):
-        self.params = params
-
-    def get_signal(self, data):
-        raise NotImplementedError("This method should be implemented by subclasses.")
 
 class MultiTimeframeEmaStrategy(BaseStrategy):
     """
@@ -265,7 +260,9 @@ class ScalpingEmaCrossoverStrategy(BaseStrategy):
         self.ema_fast_len = params.get('ema_fast_len', 9)
         self.ema_slow_len = params.get('ema_slow_len', 20)
         self.swing_lookback = params.get('swing_lookback', 10) # Tìm đỉnh/đáy trong 10 nến gần nhất
-        self.rr_ratio = params.get('rr_ratio', 1.5) # Tỷ lệ Risk/Reward        
+        self.rr_ratio = params.get('rr_ratio', 1.5) # Tỷ lệ Risk/Reward
+        self.use_atr_sl = params.get('use_atr_sl', False)
+        self.atr_multiplier = params.get('atr_multiplier', 1.5)
 
     def get_signal(self, analyzed_data):
         if len(analyzed_data) < 2:
@@ -292,9 +289,15 @@ class ScalpingEmaCrossoverStrategy(BaseStrategy):
         # Tín hiệu MUA: Xu hướng M15 tăng VÀ EMA nhanh cắt lên EMA chậm
         if m15_trend == 1 and ema_fast_previous < ema_slow_previous and ema_fast_latest > ema_slow_latest:
             # Đặt SL dưới đáy gần nhất
-            recent_low = analyzed_data['LOW'].iloc[-self.swing_lookback:].min()
-            stop_loss = recent_low - 0.2 # Thêm một khoảng đệm nhỏ
-            
+            recent_low = analyzed_data['LOW_M5'].iloc[-self.swing_lookback:].min()
+            if self.use_atr_sl:
+                atr = latest.get('ATR_14_M5', 0.2) # Lấy ATR, nếu không có thì mặc định 0.2
+                if atr is None or atr <= 0: atr = 0.2
+                sl_buffer = atr * self.atr_multiplier
+                stop_loss = recent_low - sl_buffer
+            else:
+                stop_loss = recent_low - 0.2 # Giữ logic cũ nếu không dùng ATR
+
             # Tính TP dựa trên tỷ lệ R/R
             sl_distance = entry_price - stop_loss
             take_profit = entry_price + (sl_distance * self.rr_ratio)
@@ -303,9 +306,15 @@ class ScalpingEmaCrossoverStrategy(BaseStrategy):
         # Tín hiệu BÁN: Xu hướng M15 giảm VÀ EMA nhanh cắt xuống EMA chậm
         if m15_trend == -1 and ema_fast_previous > ema_slow_previous and ema_fast_latest < ema_slow_latest:
             # Đặt SL trên đỉnh gần nhất
-            recent_high = analyzed_data['HIGH'].iloc[-self.swing_lookback:].max()
-            stop_loss = recent_high + 0.2 # Thêm một khoảng đệm nhỏ
-
+            recent_high = analyzed_data['HIGH_M5'].iloc[-self.swing_lookback:].max()
+            if self.use_atr_sl:
+                atr = latest.get('ATR_14_M5', 0.2)
+                if atr is None or atr <= 0: atr = 0.2
+                sl_buffer = atr * self.atr_multiplier
+                stop_loss = recent_high + sl_buffer
+            else:
+                stop_loss = recent_high + 0.2 # Giữ logic cũ nếu không dùng ATR
+                
             # Tính TP dựa trên tỷ lệ R/R
             sl_distance = stop_loss - entry_price
             take_profit = entry_price - (sl_distance * self.rr_ratio)
@@ -325,6 +334,8 @@ class ScalpingRsiPullbackStrategy(BaseStrategy):
         self.rr_ratio = params.get('rr_ratio', 1.5)
         self.rsi_oversold = params.get('rsi_oversold', 30)
         self.rsi_overbought = params.get('rsi_overbought', 70)
+        self.use_atr_sl = params.get('use_atr_sl', False)
+        self.atr_multiplier = params.get('atr_multiplier', 1.5)
 
     def get_signal(self, analyzed_data):
         if len(analyzed_data) < 2:
@@ -335,7 +346,7 @@ class ScalpingRsiPullbackStrategy(BaseStrategy):
         
         # --- 1. Xác định xu hướng chính trên M15 ---
         m15_trend = latest.get('M15_TREND_EMA200', 0)
-        entry_price = latest['CLOSE']
+        entry_price = latest['CLOSE_M5'] # Sử dụng giá M5 cho scalping
 
         # --- 2. Lấy giá trị RSI trên M5 ---
         rsi_latest = latest.get('RSI_14')
@@ -347,8 +358,15 @@ class ScalpingRsiPullbackStrategy(BaseStrategy):
         # --- Tín hiệu MUA: Xu hướng M15 tăng VÀ RSI vừa thoát khỏi vùng quá bán ---
         if m15_trend == 1 and rsi_previous < self.rsi_oversold and rsi_latest > self.rsi_oversold:
             print(f"Tín hiệu MUA: RSI thoát khỏi vùng quá bán ({rsi_previous:.2f} -> {rsi_latest:.2f})")
-            recent_low = analyzed_data['LOW'].iloc[-self.swing_lookback:].min()
-            stop_loss = recent_low - 0.2
+            recent_low = analyzed_data['LOW_M5'].iloc[-self.swing_lookback:].min()
+            if self.use_atr_sl:
+                atr = latest.get('ATR_14_M5', 0.2)
+                if atr is None or atr <= 0: atr = 0.2
+                sl_buffer = atr * self.atr_multiplier
+                stop_loss = recent_low - sl_buffer
+            else:
+                stop_loss = recent_low - 0.2
+
             sl_distance = entry_price - stop_loss
             take_profit = entry_price + (sl_distance * self.rr_ratio)
             return 1, stop_loss, take_profit
@@ -356,8 +374,15 @@ class ScalpingRsiPullbackStrategy(BaseStrategy):
         # --- Tín hiệu BÁN: Xu hướng M15 giảm VÀ RSI vừa thoát khỏi vùng quá mua ---
         if m15_trend == -1 and rsi_previous > self.rsi_overbought and rsi_latest < self.rsi_overbought:
             print(f"Tín hiệu BÁN: RSI thoát khỏi vùng quá mua ({rsi_previous:.2f} -> {rsi_latest:.2f})")
-            recent_high = analyzed_data['HIGH'].iloc[-self.swing_lookback:].max()
-            stop_loss = recent_high + 0.2
+            recent_high = analyzed_data['HIGH_M5'].iloc[-self.swing_lookback:].max()
+            if self.use_atr_sl:
+                atr = latest.get('ATR_14_M5', 0.2)
+                if atr is None or atr <= 0: atr = 0.2
+                sl_buffer = atr * self.atr_multiplier
+                stop_loss = recent_high + sl_buffer
+            else:
+                stop_loss = recent_high + 0.2
+
             sl_distance = stop_loss - entry_price
             take_profit = entry_price - (sl_distance * self.rr_ratio)
             return -1, stop_loss, take_profit
@@ -446,7 +471,7 @@ class BollingerBandMeanReversionStrategy(BaseStrategy):
             return 0, None, None
 
         latest = analyzed_data.iloc[-1]
-        entry_price = latest['CLOSE_M5'] # Sử dụng giá M5 cho chiến lược scalping
+        entry_price = latest.get('CLOSE_M5', latest.get('CLOSE')) # Sử dụng giá M5 cho chiến lược scalping
 
         # Lấy các chỉ báo đã được tính toán trong analysis.py
         # SỬA LỖI: Sửa lại tên cột Bollinger Bands cho đúng với định dạng của pandas-ta

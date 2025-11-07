@@ -507,16 +507,22 @@ class Backtester:
 
             # --- Candlestick Reversal Exit ---
             if self.use_candlestick_exit:
+                # LOGIC MỚI: Chỉ kích hoạt thoát lệnh bằng nến khi giao dịch đang bị LỖ
+                is_trade_losing = False
                 if trade['type'] == 'BUY':
-                    # Check for bearish reversal patterns to close BUY trade
-                    if any(current_bar.get(p, 0) < 0 for p in self.bearish_reversal_patterns) and trade not in [t[0] for t in trades_to_process_for_closure]:
-                        trades_to_process_for_closure.append((trade, current_bar['CLOSE'], "Candlestick Reversal"))
-                        continue
-                else: # SELL
-                    # Check for bullish reversal patterns to close SELL trade
-                    if any(current_bar.get(p, 0) > 0 for p in self.bullish_reversal_patterns) and trade not in [t[0] for t in trades_to_process_for_closure]:
-                        trades_to_process_for_closure.append((trade, current_bar['CLOSE'], "Candlestick Reversal"))
-                        continue
+                    is_trade_losing = current_bar['CLOSE'] < trade['entry_price']
+                    if is_trade_losing and any(current_bar.get(p, 0) < 0 for p in self.bearish_reversal_patterns):
+                        if trade not in [t[0] for t in trades_to_process_for_closure]:
+                            print(f"[{current_bar.name}] Closing losing BUY trade due to Bearish Reversal Candle.")
+                            trades_to_process_for_closure.append((trade, current_bar['CLOSE'], "Candlestick Reversal (Loss Cut)"))
+                            continue
+                else: # SELL trade
+                    is_trade_losing = current_bar['CLOSE'] > trade['entry_price']
+                    if is_trade_losing and any(current_bar.get(p, 0) > 0 for p in self.bullish_reversal_patterns):
+                        if trade not in [t[0] for t in trades_to_process_for_closure]:
+                            print(f"[{current_bar.name}] Closing losing SELL trade due to Bullish Reversal Candle.")
+                            trades_to_process_for_closure.append((trade, current_bar['CLOSE'], "Candlestick Reversal (Loss Cut)"))
+                            continue
 
             # --- SL/TP Check ---
             if trade['type'] == 'BUY':

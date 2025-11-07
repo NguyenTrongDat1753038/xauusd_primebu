@@ -1,5 +1,7 @@
 
-from strategies import BaseStrategy, ScalpingEmaCrossoverStrategy, ScalpingRsiPullbackStrategy
+from .base_strategy import BaseStrategy
+from .scalping_ema_crossover_strategy import ScalpingEmaCrossoverStrategy
+from .scalping_rsi_pullback_strategy import ScalpingRsiPullbackStrategy
 import pandas as pd
 
 class CombinedScalpingStrategy(BaseStrategy):
@@ -16,6 +18,12 @@ class CombinedScalpingStrategy(BaseStrategy):
         # The number of confirmations required to generate a signal. E.g., 1 for any signal, 2 for both.
         self.required_votes = params.get('required_votes', 1)
 
+        # --- Thêm logic bỏ phiếu bằng mô hình nến ---
+        self.use_candle_vote = params.get('use_candle_vote', False)
+        self.bullish_patterns = params.get('bullish_patterns', ['CDL_HAMMER', 'CDL_INVERTEDHAMMER', 'CDL_ENGULFING', 'CDL_PIERCING', 'CDL_MORNINGSTAR'])
+        self.bearish_patterns = params.get('bearish_patterns', ['CDL_HANGINGMAN', 'CDL_SHOOTINGSTAR', 'CDL_ENGULFING', 'CDL_EVENINGSTAR'])
+
+
     def get_signal(self, analyzed_data: pd.DataFrame):
         """
         Generates a signal based on a voting system.
@@ -23,6 +31,7 @@ class CombinedScalpingStrategy(BaseStrategy):
         """
         buy_votes = 0
         sell_votes = 0
+        signals_data = [] # Lưu trữ (signal, sl, tp) của các chiến lược đã vote
         
         # --- Vote 1: EMA Crossover Strategy ---
         ema_signal, ema_sl, ema_tp = self.ema_strategy.get_signal(analyzed_data)
@@ -30,6 +39,8 @@ class CombinedScalpingStrategy(BaseStrategy):
             buy_votes += 1
         elif ema_signal == -1:
             sell_votes += 1
+        if ema_signal != 0:
+            signals_data.append({'signal': ema_signal, 'sl': ema_sl, 'tp': ema_tp, 'source': 'EMA'})
 
         # --- Vote 2: RSI Pullback Strategy ---
         rsi_signal, rsi_sl, rsi_tp = self.rsi_strategy.get_signal(analyzed_data)
@@ -37,38 +48,56 @@ class CombinedScalpingStrategy(BaseStrategy):
             buy_votes += 1
         elif rsi_signal == -1:
             sell_votes += 1
+        if rsi_signal != 0:
+            signals_data.append({'signal': rsi_signal, 'sl': rsi_sl, 'tp': rsi_tp, 'source': 'RSI'})
+
+        # --- Vote 3: Candlestick Pattern Strategy ---
+        if self.use_candle_vote:
+            latest = analyzed_data.iloc[-1]
+            is_bullish_candle = any(latest.get(p, 0) > 0 for p in self.bullish_patterns)
+            is_bearish_candle = any(latest.get(p, 0) < 0 for p in self.bearish_patterns)
+            if is_bullish_candle:
+                buy_votes += 1
+                # Nến không tự cung cấp SL/TP, nên ta không thêm vào signals_data
+            elif is_bearish_candle:
+                sell_votes += 1
 
         # --- Decision Making ---
         
         # Check for BUY signal
         if buy_votes >= self.required_votes:
-            print(f"Combined BUY Signal: {buy_votes} votes received.")            
-            # Logic to choose the safest (lowest) Stop Loss among all voting signals
-            final_sl = None
-            if ema_signal == 1 and rsi_signal == 1:
-                final_sl = min(ema_sl, rsi_sl) if ema_sl is not None and rsi_sl is not None else (ema_sl or rsi_sl)
-            elif ema_signal == 1:
-                final_sl = ema_sl
-            else: # rsi_signal must be 1
-                final_sl = rsi_sl
+            print(f"Combined BUY Signal: {buy_votes} votes received.")
+            # Lấy tất cả SL/TP từ các tín hiệu MUA đã bỏ phiếu
+            buy_signals = [s for s in signals_data if s['signal'] == 1]
+            if not buy_signals: # Nếu chỉ có nến vote, không có SL/TP
+                return 0, None, None
             
-            # For TP, we can take the average or the closest one. Let's take the closest for now.
-            final_tp = min(filter(None, [ema_tp, rsi_tp])) if any(v is not None for v in [ema_tp, rsi_tp]) else None
+            # Chọn SL an toàn nhất (thấp nhất) và TP gần nhất (dễ đạt nhất)
+            valid_sls = [s['sl'] for s in buy_signals if s['sl'] is not None]
+            valid_tps = [s['tp'] for s in buy_signals if s['tp'] is not None]
+
+            if not valid_sls or not valid_tps: return 0, None, None
+
+            final_sl = min(valid_sls)
+            final_tp = min(valid_tps)
             return 1, final_sl, final_tp
 
         # Check for SELL signal
         if sell_votes >= self.required_votes:
             print(f"Combined SELL Signal: {sell_votes} votes received.")
-            # Logic to choose the safest (highest) Stop Loss
-            final_sl = None
-            if ema_signal == -1 and rsi_signal == -1:
-                final_sl = max(ema_sl, rsi_sl) if ema_sl is not None and rsi_sl is not None else (ema_sl or rsi_sl)
-            elif ema_signal == -1:
-                final_sl = ema_sl
-            else: # rsi_signal must be -1
-                final_sl = rsi_sl
+            # Lấy tất cả SL/TP từ các tín hiệu BÁN đã bỏ phiếu
+            sell_signals = [s for s in signals_data if s['signal'] == -1]
+            if not sell_signals: # Nếu chỉ có nến vote, không có SL/TP
+                return 0, None, None
 
-            final_tp = max(filter(None, [ema_tp, rsi_tp])) if any(v is not None for v in [ema_tp, rsi_tp]) else None
+            # Chọn SL an toàn nhất (cao nhất) và TP gần nhất (dễ đạt nhất)
+            valid_sls = [s['sl'] for s in sell_signals if s['sl'] is not None]
+            valid_tps = [s['tp'] for s in sell_signals if s['tp'] is not None]
+
+            if not valid_sls or not valid_tps: return 0, None, None
+
+            final_sl = max(valid_sls)
+            final_tp = max(valid_tps) # TP của lệnh bán là giá thấp hơn, nên max là gần nhất
             return -1, final_sl, final_tp
 
         # No signal

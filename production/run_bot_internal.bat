@@ -8,4 +8,4 @@ REM Kich hoat moi truong ao (virtual environment)
 call "%PROJECT_PATH%\ta_env\Scripts\activate.bat"
 
 REM Chay script Python.
-python "%PROJECT_PATH%\production\run_live.py"
+python "%PROJECT_PATH%\production\main.py"

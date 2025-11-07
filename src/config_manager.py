@@ -1,38 +1,38 @@
 
 import json
 import os
-import re
 
-def get_config():
+def get_config_for_env(environment='testing'):
     """
-    Reads the configuration file and returns it as a dictionary.
+    Tải và trả về cấu hình từ file JSON tương ứng với môi trường.
 
-    The path is constructed relative to this file's location to ensure
-    it works regardless of where the script is run from.
+    Args:
+        environment (str): Môi trường cần tải cấu hình ('testing' hoặc 'production').
+
+    Returns:
+        dict: Từ điển chứa cấu hình, hoặc None nếu có lỗi.
     """
-    # Construct the absolute path to the config file
-    # config.json is in ../configs/ from the src/ directory
-    config_path = os.path.join(os.path.dirname(__file__), '..', 'configs', 'config.json')
-    
     try:
+        # Xác định đường dẫn đến thư mục gốc của dự án (nơi chứa 'src', 'production', 'testing')
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+        # Xây dựng đường dẫn đến file config dựa trên môi trường
+        config_filename = f"{environment}_config.json"
+        config_path = os.path.join(project_root, 'configs', config_filename)
+
         with open(config_path, 'r', encoding='utf-8') as f:
-            # Read the file and remove comments before parsing
-            content = f.read()
-            # Remove all C-style comments (// and /* */)
-            content = re.sub(r'//.*?\n|/\*.*?\*/', '', content, flags=re.S)
-            config = json.loads(content)
+            config = json.load(f)
         return config
-    except FileNotFoundError:
-        print(f"Error: Configuration file not found at {config_path}")
+    except FileNotFoundError as e:
+        print(f"Lỗi: Không tìm thấy file cấu hình cho môi trường '{environment}' tại '{config_path}'.")
+        print(f"Chi tiết lỗi: {e}")
         return None
     except json.JSONDecodeError:
-        print(f"Error: Could not decode JSON from the configuration file at {config_path}")
+        print(f"Lỗi: File cấu hình '{config_path}' không phải là file JSON hợp lệ.")
+        return None
+    except Exception as e:
+        print(f"Lỗi không xác định khi tải cấu hình: {e}")
         return None
 
-if __name__ == '__main__':
-    # This is a simple test to show how the function works
-    config = get_config()
-    if config:
-        print("Configuration loaded successfully!")
-        print("Trading Symbol:", config.get('trading', {}).get('symbol'))
-        print("EMA Periods:", config.get('strategy', {}).get('ema_periods'))
+# Giữ lại hàm get_config cũ để tương thích ngược (mặc định là testing)
+get_config = get_config_for_env

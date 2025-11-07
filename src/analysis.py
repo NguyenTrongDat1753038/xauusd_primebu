@@ -114,6 +114,32 @@ def find_supply_demand_zones(df: pd.DataFrame, lookback: int = 100, impulse_thre
 
     return supply_zones, demand_zones
 
+
+def _calculate_cpr(d1_data: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculates the Central Pivot Range (CPR) levels for the next day.
+    """
+    if d1_data is None or d1_data.empty:
+        return pd.DataFrame()
+
+    # Make sure the columns are uppercase
+    d1_data.columns = [col.upper() for col in d1_data.columns]
+
+    cpr_df = pd.DataFrame(index=d1_data.index)
+    cpr_df['prev_high'] = d1_data['HIGH'].shift(1)
+    cpr_df['prev_low'] = d1_data['LOW'].shift(1)
+    cpr_df['prev_close'] = d1_data['CLOSE'].shift(1)
+
+    cpr_df['pivot'] = (cpr_df['prev_high'] + cpr_df['prev_low'] + cpr_df['prev_close']) / 3
+    cpr_df['bc'] = (cpr_df['prev_high'] + cpr_df['prev_low']) / 2
+    cpr_df['tc'] = (cpr_df['pivot'] - cpr_df['bc']) + cpr_df['pivot']
+    
+    # Rename columns for clarity
+    cpr_df.rename(columns={'pivot': 'CPR_PIVOT', 'bc': 'CPR_BC', 'tc': 'CPR_TC'}, inplace=True)
+
+    return cpr_df[['CPR_PIVOT', 'CPR_BC', 'CPR_TC']]
+
+
 def add_nearest_sd_zones(base_df: pd.DataFrame, timeframes_data: Dict[str, pd.DataFrame]):
     """
     Tính toán và thêm các cột chứa mức giá của vùng Cung/Cầu gần nhất.
@@ -213,7 +239,7 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
     - Execution timeframe: M5
     - Trend timeframe: M15
     """
-    required_tfs = ['m1', 'm5', 'm15', 'm30', 'h1']
+    required_tfs = ['m1', 'm5', 'm15', 'm30', 'h1', 'h4', 'd1']
     if not all(tf in timeframes_data for tf in ['m1', 'm5', 'm15']):
         print("Lỗi: Thiếu dữ liệu M1, M5, hoặc M15.")
         return None
@@ -225,7 +251,7 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
     print("Đang hợp nhất các khung thời gian...")
     merged_df = m1_df.copy()
 
-    for tf in ['m5', 'm15', 'm30', 'h1', 'h4']: # Thêm 'h4' vào đây
+    for tf in required_tfs:
         if tf in timeframes_data:
             tf_df = timeframes_data[tf].copy()
             # Đổi tên cột để thêm hậu tố timeframe
@@ -236,6 +262,37 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
     # --- 2. Tính toán tất cả các chỉ báo trên DataFrame đã hợp nhất ---
     print("Đang tính toán các chỉ báo...")
 
+    # --- BỔ SUNG: Tính toán CPR hàng ngày ---
+    if 'd1' in timeframes_data:
+        print("Calculating CPR levels...")
+        cpr_df = _calculate_cpr(timeframes_data['d1'])
+        # Resample CPR data to M1 and forward-fill
+        cpr_df_resampled = cpr_df.reindex(merged_df.index, method='ffill')
+        merged_df = pd.concat([merged_df, cpr_df_resampled], axis=1)
+
+
+    # --- BỔ SUNG: Tính toán Volume Profile và POC ---
+    vp_params = strategy_params.get('CprVolumeProfileStrategy', {})
+    vp_width = vp_params.get('vp_width', 20)
+    vp_lookback = vp_params.get('vp_lookback', 240) # e.g., 240 bars of M5 data = 2 days
+
+    # Calculate Volume Profile on M5 data
+    if 'CLOSE_M5' in merged_df.columns and 'VOLUME_M5' in merged_df.columns:
+        print("Calculating Volume Profile and POC...")
+        poc_list = []
+        for date in pd.Series(merged_df.index.date).unique():
+            daily_data = merged_df[merged_df.index.date == date]
+            vp = ta.vp(daily_data['CLOSE_M5'], daily_data['VOLUME_M5'], width=vp_width)
+            if vp is not None and not vp.empty:
+                poc = vp.loc[vp[f'total_{daily_data["VOLUME_M5"].name}'].idxmax()][f'mean_{daily_data["CLOSE_M5"].name}']
+                poc_list.append(pd.DataFrame({'POC': poc}, index=daily_data.index))
+
+        if poc_list:
+            poc_df = pd.concat(poc_list)
+            merged_df = merged_df.join(poc_df)
+
+
+
     # Lấy tham số từ config
     ema_params = strategy_params.get('ScalpingEmaCrossoverStrategy', {})
     ema_fast_len = ema_params.get('ema_fast_len', 9)
@@ -245,6 +302,10 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
     merged_df[f'M5_EMA_{ema_fast_len}'] = ta.ema(merged_df['CLOSE_M5'], length=ema_fast_len)
     merged_df[f'M5_EMA_{ema_slow_len}'] = ta.ema(merged_df['CLOSE_M5'], length=ema_slow_len)
     merged_df['RSI_14'] = ta.rsi(merged_df['CLOSE_M5'], length=14)
+    
+    # --- BỔ SUNG: Tính toán ATR trên M5 cho SL động ---
+    # Sử dụng HIGH_M5, LOW_M5, CLOSE_M5 để tính ATR
+    merged_df['ATR_14_M5'] = ta.atr(high=merged_df['HIGH_M5'], low=merged_df['LOW_M5'], close=merged_df['CLOSE_M5'], length=14)
 
     # Lấy tham số cho Bollinger Bands từ config
     bb_params = strategy_params.get('BollingerBandMeanReversionStrategy', {})
@@ -258,6 +319,10 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
     merged_df['M15_EMA_34'] = ta.ema(merged_df['CLOSE_M15'], length=34)
     merged_df['M15_EMA_89'] = ta.ema(merged_df['CLOSE_M15'], length=89)
     m15_ema_200 = ta.ema(merged_df['CLOSE_M15'], length=200)
+    # Thêm các chỉ báo M15 cần cho XauSmartScalpStrategy
+    merged_df['ATR_14_M15'] = ta.atr(high=merged_df['HIGH_M15'], low=merged_df['LOW_M15'], close=merged_df['CLOSE_M15'], length=14)
+    merged_df['RSI_14_M15'] = ta.rsi(merged_df['CLOSE_M15'], length=14)
+
     merged_df['M15_TREND_EMA200'] = np.where(merged_df['CLOSE_M15'] > m15_ema_200, 1, -1)
     
     # Add all available Candlestick Patterns to the merged DataFrame
@@ -291,10 +356,23 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
         adx_indicator = ta.adx(high=merged_df['HIGH_M15'], low=merged_df['LOW_M15'], close=merged_df['CLOSE_M15'], length=adx_length)
         if adx_col_name in adx_indicator.columns:
             merged_df[adx_m15_col_name] = adx_indicator[adx_col_name]
+            
+    # --- BỔ SUNG TÍNH TOÁN S/R CHO XauSmartScalpStrategy ---
+    sr_periods = {'m15': 50, 'h1': 50, 'h4': 50} # Ví dụ, có thể tinh chỉnh
+    for tf_name, period in sr_periods.items():
+        tf_upper = tf_name.upper()
+        if f'HIGH_{tf_upper}' in merged_df.columns:
+            merged_df[f'{tf_upper}_S'] = merged_df[f'LOW_{tf_upper}'].rolling(window=period, min_periods=1).min()
+            merged_df[f'{tf_upper}_R'] = merged_df[f'HIGH_{tf_upper}'].rolling(window=period, min_periods=1).max()
+
 
     # --- 3. Dọn dẹp dữ liệu ---
-    # Dọn dẹp các cột OHLC không cần thiết từ các khung thời gian cao hơn
-    cols_to_drop = [col for col in merged_df.columns if ('_M5' in col or '_M15' in col or '_M30' in col or '_H1' in col or '_H4' in col) and ('OPEN' in col or 'HIGH' in col or 'LOW' in col)]
+    # Dọn dẹp các cột OHLC không cần thiết từ các khung thời gian cao hơn,
+    # NHƯNG giữ lại các cột của M5 vì chúng cần thiết cho việc đặt SL/TP trong các chiến lược scalping.
+    # XauSmartScalpStrategy cần dữ liệu OHLC của M15, nên ta sẽ không xóa chúng.
+    # Bắt đầu dọn dẹp từ M30 trở lên.
+    tfs_to_clean = ['_M30', '_H1', '_H4', '_D1']
+    cols_to_drop = [col for col in merged_df.columns if any(tf in col for tf in tfs_to_clean) and any(ohlc in col for ohlc in ['OPEN', 'HIGH', 'LOW'])]
     merged_df.drop(columns=cols_to_drop, inplace=True)
 
     merged_df.dropna(inplace=True)

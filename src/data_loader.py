@@ -34,8 +34,9 @@ def load_csv_data(file_path):
             df['DATETIME'] = pd.to_datetime(df['DATE'])
         df = df.set_index('DATETIME')
 
-        # Keep only the necessary OHLC columns
-        df = df[['OPEN', 'HIGH', 'LOW', 'CLOSE']]
+        # Keep only the necessary OHLC and Volume columns
+        df = df[['OPEN', 'HIGH', 'LOW', 'CLOSE', 'TICKVOL']]
+        df.rename(columns={'TICKVOL': 'VOLUME'}, inplace=True)
 
         # Ensure all data is numeric, coercing errors
         for col in df.columns:

@@ -1,0 +1,89 @@
+{
+    "mt5_credentials": {
+        "login": 272716800,
+        "password": "Trongdat99@",
+        "server": "Exness-MT5Trial14"
+    },
+    "strategy": {
+    "active_strategy": "EmaBounceStrategy",
+        "EmaBounceStrategy": {
+            "rsi_overbought": 70,
+            "rsi_oversold": 30,
+            "atr_multiplier_sl": 1.5,
+            "rr_ratio": 2.0,
+            "use_strict_trend_filter": false,
+            "ema_retest_tolerance": 0.001
+        },
+        "CprVolumeProfileStrategy": {
+            "atr_multiplier_sl": 1.5,
+            "rr_ratio": 2.0,
+            "poc_retest_tolerance": 0.001,
+            "vp_width": 20,
+            "rsi_overbought": 70,
+            "rsi_oversold": 30,
+            "use_strict_trend_filter": false
+        },
+        "AdvancedEmaStrategy": {
+            "rsi_overbought": 70,
+            "rsi_oversold": 30,
+            "atr_multiplier_sl": 1.5,
+            "rr_ratio": 2.0,
+            "use_strict_trend_filter": false
+        }
+    },
+    "telegram": {
+        "enabled": false,
+        "bot_token": "YOUR_TEST_BOT_TOKEN",
+        "chat_id": "YOUR_TEST_CHAT_ID"
+    },
+    "trading": {
+        "risk_percent": 1.5,
+        "initial_balance": 10000,
+        "max_open_trades": 3,
+        "use_dynamic_sizing": true,
+        "drawdown_reducer_tiers": [
+            {"threshold_percent": 8.0, "factor": 0.6},
+            {"threshold_percent": 5.0, "factor": 0.8}
+        ],
+        "circuit_breaker": {
+            "enabled": true,
+            "daily_loss_limit_percent": 10.0,
+            "consecutive_loss_limit": 3,
+            "consecutive_loss_cooldown_signals": 2
+        },
+        "time_filter": {
+            "enabled": false,
+            "adx_override_threshold": 35.0,
+            "sessions": [
+                {"name": "Premium_London", "start_hour": 6, "end_hour": 9, "multiplier": 1.0},
+                {"name": "Premium_US", "start_hour": 13, "end_hour": 16, "multiplier": 1.0},
+                {"name": "Standard_Asia", "start_hour": 1, "end_hour": 6, "multiplier": 0.8},
+                {"name": "Standard_London_Mid", "start_hour": 9, "end_hour": 13, "multiplier": 0.8},
+                {"name": "Avoid_US_Close", "start_hour": 17, "end_hour": 22, "multiplier": 0.3},
+                {"name": "Avoid_Overnight", "start_hour": 22, "end_hour": 1, "multiplier": 0.3}
+            ],
+            "default_multiplier": 0.3
+        },
+        "use_breakeven_stop": true,
+        "use_atr_based_breakeven": false,
+        "breakeven_atr_trigger_multiplier": 1.5,
+        "breakeven_extra_points": 0.5,
+        "use_trailing_stop": false,
+        "trailing_trigger_step": 10.0,
+        "trailing_profit_step": 2.0,
+        "use_tiered_trailing_stop": true,
+        "tiered_trailing_stops": [
+            { "trigger": 22.5, "sl_add": 0.5 }
+        ],
+        "use_candlestick_exit": true,
+        "multi_tier_tp": {
+            "enabled": false
+        },
+        "contract_size": 100.0,
+        "close_on_friday": true,
+        "friday_close_time": "21:30:00",
+        "live_symbol": "XAUUSDm",
+        "backtest_symbol": "XAUUSDm",
+        "target_sl_distance_points": 6.0
+    }
+}
