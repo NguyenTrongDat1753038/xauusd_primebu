@@ -515,9 +515,15 @@ def calculate_dynamic_lot_size(symbol, stop_loss_price, trading_params, peak_equ
     symbol_info = mt5.symbol_info(symbol)
     if not all([account_info, symbol_info]):
         print("Lỗi: Không thể lấy thông tin tài khoản hoặc symbol.")
-        return None
+        return None, None
 
     balance = account_info.balance
+
+    # --- SỬA LỖI: Lấy giá tick ngay từ đầu để tránh UnboundLocalError ---
+    tick = mt5.symbol_info_tick(symbol)
+    if not tick:
+        print("Lỗi: Không thể lấy giá tick hiện tại.")
+        return None, None
 
     # Xác định hướng giao dịch và giá vào lệnh dự kiến
     is_buy_trade = stop_loss_price < tick.bid
@@ -527,10 +533,6 @@ def calculate_dynamic_lot_size(symbol, stop_loss_price, trading_params, peak_equ
         is_buy_trade = stop_loss_price < entry_price
         print(f"Info: Sử dụng giá vào lệnh ghi đè: {entry_price:.3f}")
     else:
-        tick = mt5.symbol_info_tick(symbol)
-        if not tick:
-            print("Lỗi: Không thể lấy giá tick hiện tại.")
-            return None
         entry_price = tick.ask if is_buy_trade else tick.bid
     if entry_price <= 0:
         print(f"Lỗi: Giá vào lệnh không hợp lệ ({entry_price}). Bỏ qua tính toán.")
@@ -570,13 +572,13 @@ def calculate_dynamic_lot_size(symbol, stop_loss_price, trading_params, peak_equ
     strategy_sl_distance_points = abs(entry_price - stop_loss_price)
     if strategy_sl_distance_points <= 0:
         print(f"Lỗi: Khoảng cách SL của chiến lược không hợp lệ ({strategy_sl_distance_points}). Bỏ qua.")
-        return None
+        return None, None
 
     # KIỂM TRA AN TOÀN: Bỏ qua nếu khoảng cách SL quá ngắn so với cấu hình
     if strategy_sl_distance_points < min_sl_distance_points:
         print(f"CẢNH BÁO: Khoảng cách SL của chiến lược ({strategy_sl_distance_points:.2f}) nhỏ hơn mức tối thiểu cho phép ({min_sl_distance_points:.2f}). Bỏ qua tín hiệu.")
         if notifier: notifier.send_message(f"<b>[CẢNH BÁO] Khoảng cách SL quá ngắn. Bỏ qua tín hiệu.</b>")
-        return None
+        return None, None
 
     # Chọn khoảng cách SL xa hơn giữa SL của chiến lược và SL mục tiêu
     effective_sl_distance = max(strategy_sl_distance_points, target_sl_distance_points)
@@ -601,14 +603,14 @@ def calculate_dynamic_lot_size(symbol, stop_loss_price, trading_params, peak_equ
 
     if position_size <= 0:
         print("Cảnh báo: Khối lượng lệnh tính được bằng 0. Bỏ qua giao dịch.")
-        return None
+        return None, None
 
     # --- KIỂM TRA AN TOÀN CUỐI CÙNG ---
     # Kiểm tra xem rủi ro thực tế với lot size cuối cùng có vượt quá mức trần không.
     final_risk_amount = position_size * abs(entry_price - final_stop_loss_price) * contract_size
     if final_risk_amount > max_risk_amount * 1.01: # Thêm 1% dung sai cho các lỗi làm tròn
         print(f"CẢNH BÁO AN TOÀN: Lot size cuối cùng ({position_size:.2f}) làm rủi ro thực tế (${final_risk_amount:.2f}) vượt quá mức trần cho phép (${max_risk_amount:.2f}). Bỏ qua tín hiệu.")
-        return None
+        return None, None
 
     print(f"Final Calculation: Lot Size={position_size:.2f}, Stop Loss Price={final_stop_loss_price:.2f}")
     return position_size, final_stop_loss_price
