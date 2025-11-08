@@ -1,0 +1,82 @@
+{
+  "mt5_credentials": {
+    "login": 272716800,
+    "password": "Trongdat99@",
+    "server": "Exness-MT5Trial14"
+  },
+  "telegram": {
+    "enabled": true,
+    "bot_token": "8495271991:AAEa6KITp5SRrjjajJORSQdomuqxVaO8lho",
+    "chat_id": "-1002120822708"
+  },
+  "trading": {
+    "live_symbol": "EURGBPm", 
+    "magic_number": 234004,
+    "risk_percent": 3,
+  "min_risk_percent": 0.5,
+  "max_risk_percent": 4,
+  "max_open_trades": 1,
+  "max_buy_orders": 1,
+  "max_sell_orders": 1,
+  "contract_size": 100000.0,
+  "default_position_size": 0.02,
+  "min_position_size": 0.01,
+  "max_position_size": 1.0,
+  "min_sl_distance_points": 0.0015,
+  "target_sl_distance_points": 0.0045,
+  "use_new_limit_logic": true,
+
+  "use_breakeven_stop": true,
+  "breakeven_trigger_points": 0.0020,
+  "breakeven_extra_points": 0.0004,
+  "use_atr_based_breakeven": true,
+  "breakeven_atr_trigger_multiplier": 0.8,
+
+  "use_trailing_stop": true,
+  "trailing_trigger_step": 0.0025,
+  "trailing_profit_step": 0.0006,
+    "use_tiered_trailing_stop": false,
+    "tiered_trailing_stops": [],
+    "multi_tier_tp": {
+      "enabled": false,
+      "tiers": []
+    },
+    "use_candlestick_exit": false,
+    "close_on_friday": true, 
+    "friday_close_time": "21:30:00",
+    "circuit_breaker": {
+      "enabled": true,
+      "daily_loss_limit_percent": 8.0,
+      "consecutive_loss_limit": 3,
+      "consecutive_loss_cooldown_signals": 2
+    },    
+   "time_filter": {
+      "enabled": true,
+      "adx_override_threshold": 35.0,
+      "default_multiplier": 0.5,
+      "sessions": [
+        { "name": "Asian Session", "start_hour": 0, "end_hour": 7, "multiplier": 0.7 },
+        { "name": "London Session", "start_hour": 7, "end_hour": 16, "multiplier": 1.0 },
+        { "name": "New York Session", "start_hour": 12, "end_hour": 21, "multiplier": 1.0 },
+        { "name": "Avoid Overnight", "start_hour": 21, "end_hour": 24, "multiplier": 0.5 },
+        { "name": "Avoid Overnight", "start_hour": 0, "end_hour": 0, "multiplier": 0.5 }
+      ]
+    }
+  },
+ "strategy": {
+    "active_strategy": "CprVolumeProfileStrategy",
+    "CprVolumeProfileStrategy": {
+      "vp_width": 20,
+      "vp_lookback": 288,
+      "cpr_retest_tolerance": 0.0001,
+      "poc_retest_tolerance": 0.0001,
+      "confirmation_lookback": 3,
+      "use_trend_filter": true,
+      "trend_filter_ema": 200,
+      "trend_timeframe": "H1",
+      "rr_ratio": 2.5,
+      "use_atr_sl": true,
+      "atr_multiplier": 1.8
+    }
+  }
+}

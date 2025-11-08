@@ -232,6 +232,69 @@ def prepare_analysis_data(timeframes_data, sr_periods, include_sd_zones=False):
     print("Comprehensive data preparation complete.")
     return m15_df
 
+def _calculate_indicators_for_tf(df: pd.DataFrame, tf_name: str, strategy_params: Dict) -> pd.DataFrame:
+    """
+    Hàm trợ giúp để tính toán tất cả các chỉ báo cần thiết cho một khung thời gian cụ thể.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    df_copy = df.copy()
+    df_copy.columns = [col.upper() for col in df_copy.columns]
+
+    # Lấy tham số từ config
+    ema_params = strategy_params.get('ScalpingEmaCrossoverStrategy', {})
+    ema_fast_len = ema_params.get('ema_fast_len', 9)
+    ema_slow_len = ema_params.get('ema_slow_len', 20)
+
+    bb_params = strategy_params.get('BollingerBandMeanReversionStrategy', {})
+    bb_length = bb_params.get('bb_length', 20)
+    bb_std_dev = bb_params.get('bb_std_dev', 2.0)
+
+    m15_filter_params = strategy_params.get('M15FilteredScalpingStrategy', {})
+    adx_length = m15_filter_params.get('adx_length', 14)
+
+    # Tính toán chỉ báo dựa trên khung thời gian
+    if tf_name == 'm5':
+        df_copy[f'M5_EMA_{ema_fast_len}'] = ta.ema(df_copy['CLOSE'], length=ema_fast_len)
+        df_copy[f'M5_EMA_{ema_slow_len}'] = ta.ema(df_copy['CLOSE'], length=ema_slow_len)
+        df_copy['RSI_14'] = ta.rsi(df_copy['CLOSE'], length=14)
+        df_copy['ATR_14_M5'] = ta.atr(high=df_copy['HIGH'], low=df_copy['LOW'], close=df_copy['CLOSE'], length=14)
+        bbands_indicator = ta.bbands(close=df_copy['CLOSE'], length=bb_length, std=bb_std_dev)
+        if bbands_indicator is not None and not bbands_indicator.empty:
+            df_copy = df_copy.join(bbands_indicator)
+
+    elif tf_name == 'm15':
+        df_copy['M15_EMA_34'] = ta.ema(df_copy['CLOSE'], length=34)
+        df_copy['M15_EMA_89'] = ta.ema(df_copy['CLOSE'], length=89)
+        m15_ema_200 = ta.ema(df_copy['CLOSE'], length=200)
+        df_copy['M15_TREND_EMA200'] = np.where(df_copy['CLOSE'] > m15_ema_200, 1, -1)
+        df_copy['ATR_14_M15'] = ta.atr(high=df_copy['HIGH'], low=df_copy['LOW'], close=df_copy['CLOSE'], length=14)
+        df_copy['RSI_14_M15'] = ta.rsi(df_copy['CLOSE'], length=14)
+        adx_indicator = ta.adx(high=df_copy['HIGH'], low=df_copy['LOW'], close=df_copy['CLOSE'], length=adx_length)
+        if adx_indicator is not None and f'ADX_{adx_length}' in adx_indicator.columns:
+            df_copy[f'ADX_{adx_length}_M15'] = adx_indicator[f'ADX_{adx_length}']
+
+    elif tf_name == 'm30':
+        m30_ema_200 = ta.ema(df_copy['CLOSE'], length=200)
+        df_copy['M30_TREND'] = np.where(df_copy['CLOSE'] > m30_ema_200, 1, -1)
+
+    elif tf_name == 'h1':
+        df_copy['H1_EMA_34'] = ta.ema(df_copy['CLOSE'], length=34)
+        df_copy['H1_EMA_89'] = ta.ema(df_copy['CLOSE'], length=89)
+        h1_ema_200 = ta.ema(df_copy['CLOSE'], length=200)
+        df_copy['H1_TREND'] = np.where(df_copy['CLOSE'] > h1_ema_200, 1, -1)
+
+    elif tf_name == 'h4':
+        df_copy['H4_EMA_34'] = ta.ema(df_copy['CLOSE'], length=34)
+        df_copy['H4_EMA_89'] = ta.ema(df_copy['CLOSE'], length=89)
+        h4_ema_200 = ta.ema(df_copy['CLOSE'], length=200)
+        df_copy['H4_TREND'] = np.where(df_copy['CLOSE'] > h4_ema_200, 1, -1)
+
+    # Đổi tên các cột OHLC gốc để tránh trùng lặp khi join
+    df_copy.columns = [f"{col}_{tf_name.upper()}" if col in ['OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME'] else col for col in df_copy.columns]
+    return df_copy
+
 def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_params: Dict) -> Optional[pd.DataFrame]:
     """
     Chuẩn bị dữ liệu cho chiến lược scalping.
@@ -244,23 +307,21 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
         print("Lỗi: Thiếu dữ liệu M1, M5, hoặc M15.")
         return None
 
-    m1_df = timeframes_data['m1'].copy()
-    m1_df.columns = [col.upper() for col in m1_df.columns]
-
-    # --- 1. Hợp nhất tất cả các khung thời gian vào M1 ---
-    print("Đang hợp nhất các khung thời gian...")
-    merged_df = m1_df.copy()
-
+    # --- 1. Tính toán chỉ báo trên từng khung thời gian ---
+    print("Đang tính toán các chỉ báo trên từng khung thời gian...")
+    processed_tfs = {}
     for tf in required_tfs:
         if tf in timeframes_data:
-            tf_df = timeframes_data[tf].copy()
-            # Đổi tên cột để thêm hậu tố timeframe
-            tf_df.columns = [f"{col.upper()}_{tf.upper()}" for col in tf_df.columns]
-            # Join và ffill
-            merged_df = merged_df.join(tf_df.reindex(merged_df.index, method='ffill'))
+            processed_tfs[tf] = _calculate_indicators_for_tf(timeframes_data[tf], tf, strategy_params)
 
-    # --- 2. Tính toán tất cả các chỉ báo trên DataFrame đã hợp nhất ---
-    print("Đang tính toán các chỉ báo...")
+    # --- 2. Hợp nhất tất cả các khung thời gian vào M1 ---
+    print("Đang hợp nhất các khung thời gian...")
+    # Bắt đầu với M1 gốc (chỉ OHLC)
+    merged_df = timeframes_data['m1'].copy()
+    merged_df.columns = [col.upper() for col in merged_df.columns]
+
+    for tf_name, tf_df in processed_tfs.items():
+        merged_df = merged_df.join(tf_df.reindex(merged_df.index, method='ffill'))
 
     # --- BỔ SUNG: Tính toán CPR hàng ngày ---
     if 'd1' in timeframes_data:
@@ -269,7 +330,6 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
         # Resample CPR data to M1 and forward-fill
         cpr_df_resampled = cpr_df.reindex(merged_df.index, method='ffill')
         merged_df = pd.concat([merged_df, cpr_df_resampled], axis=1)
-
 
     # --- BỔ SUNG: Tính toán Volume Profile và POC ---
     vp_params = strategy_params.get('CprVolumeProfileStrategy', {})
@@ -306,15 +366,6 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
     # --- BỔ SUNG: Tính toán ATR trên M5 cho SL động ---
     # Sử dụng HIGH_M5, LOW_M5, CLOSE_M5 để tính ATR
     merged_df['ATR_14_M5'] = ta.atr(high=merged_df['HIGH_M5'], low=merged_df['LOW_M5'], close=merged_df['CLOSE_M5'], length=14)
-
-    # Lấy tham số cho Bollinger Bands từ config
-    bb_params = strategy_params.get('BollingerBandMeanReversionStrategy', {})
-    bb_length = bb_params.get('bb_length', 20)
-    bb_std_dev = bb_params.get('bb_std_dev', 2)
-    # Tính toán cả Bollinger Bands và Bollinger Bandwidth
-    bbands_indicator = ta.bbands(close=merged_df['CLOSE_M5'], length=bb_length, std=bb_std_dev)
-    if bbands_indicator is not None and not bbands_indicator.empty:
-        merged_df = merged_df.join(bbands_indicator)
 
     merged_df['M15_EMA_34'] = ta.ema(merged_df['CLOSE_M15'], length=34)
     merged_df['M15_EMA_89'] = ta.ema(merged_df['CLOSE_M15'], length=89)
@@ -365,21 +416,15 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
             merged_df[f'{tf_upper}_S'] = merged_df[f'LOW_{tf_upper}'].rolling(window=period, min_periods=1).min()
             merged_df[f'{tf_upper}_R'] = merged_df[f'HIGH_{tf_upper}'].rolling(window=period, min_periods=1).max()
 
-
     # --- 3. Dọn dẹp dữ liệu ---
-    # Dọn dẹp các cột OHLC không cần thiết từ các khung thời gian cao hơn,
-    # NHƯNG giữ lại các cột của M5 vì chúng cần thiết cho việc đặt SL/TP trong các chiến lược scalping.
-    # XauSmartScalpStrategy cần dữ liệu OHLC của M15, nên ta sẽ không xóa chúng.
-    # Bắt đầu dọn dẹp từ M30 trở lên.
-    tfs_to_clean = ['_M30', '_H1', '_H4', '_D1']
-    cols_to_drop = [col for col in merged_df.columns if any(tf in col for tf in tfs_to_clean) and any(ohlc in col for ohlc in ['OPEN', 'HIGH', 'LOW'])]
-    merged_df.drop(columns=cols_to_drop, inplace=True)
+    # Giữ lại các cột OHLC của M1 (gốc) và M5 (cho tính toán scalping)
+    # Xóa các cột OHLC không cần thiết khác để làm sạch
+    cols_to_drop = [col for col in merged_df.columns if any(s in col for s in ['OPEN_', 'HIGH_', 'LOW_', 'CLOSE_', 'VOLUME_']) and not any(s in col for s in ['_M5'])]
+    # Giữ lại các cột gốc của M1 không có hậu tố
+    cols_to_drop = [c for c in cols_to_drop if c not in ['OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME']]
+    merged_df.drop(columns=cols_to_drop, inplace=True, errors='ignore')
 
     merged_df.dropna(inplace=True)
 
     print("Chuẩn bị dữ liệu scalping hoàn tất.")
     return merged_df
-
-    # --- PHẦN CODE CŨ BỊ XÓA ---
-    # ... (Toàn bộ logic cũ từ dòng 270 đến 318 đã được thay thế)
-    

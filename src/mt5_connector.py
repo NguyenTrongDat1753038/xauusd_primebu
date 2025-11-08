@@ -141,7 +141,7 @@ def get_mt5_data(symbol, timeframe_str, num_bars):
     df.rename(columns={'open': 'OPEN', 'high': 'HIGH', 'low': 'LOW', 'close': 'CLOSE', 'tick_volume': 'VOLUME'}, inplace=True)
     return df[['OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME']]
 
-def place_order(symbol, lot, trade_type, price, sl_value, tp_value, notifier=None):
+def place_order(symbol, lot, trade_type, price, sl_value, tp_value, magic_number, notifier=None):
     """
     Thực hiện một lệnh trên MT5 (lệnh thị trường hoặc lệnh chờ).
 
@@ -152,6 +152,7 @@ def place_order(symbol, lot, trade_type, price, sl_value, tp_value, notifier=Non
         price (float): Giá vào lệnh. Đối với lệnh thị trường, có thể để 0 để MT5 tự lấy giá.
                        Đối với lệnh chờ, đây là giá kích hoạt.
         sl_value (float): Mức Stop Loss.
+        magic_number (int): Magic Number để gán cho lệnh.
         tp_value (float): Mức Take Profit.
         notifier (TelegramNotifier, optional): Đối tượng để gửi thông báo.
 
@@ -254,7 +255,7 @@ def place_order(symbol, lot, trade_type, price, sl_value, tp_value, notifier=Non
         "price": float(price),  # Chuyển đổi explicit sang float
         "sl": float(sl) if sl is not None and sl > 0 else 0.0,
         "tp": float(tp) if tp is not None and tp > 0 else 0.0,
-        "magic": 234002,
+        "magic": magic_number,
         "comment": "PyBot",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
@@ -324,24 +325,28 @@ def place_order(symbol, lot, trade_type, price, sl_value, tp_value, notifier=Non
     # Lấy giá entry đúng - sử dụng giá từ request nếu result.price là 0
     entry_price = result.price if result.price > 0 else request['price']
     
+    # Lấy số digits để định dạng output cho chính xác
+    symbol_info = mt5.symbol_info(symbol)
+    digits = symbol_info.digits if symbol_info else 3
+    format_spec = f".{digits}f" if digits > 0 else ".0f"
+
     print(f"--- {order_kind} ĐƯỢC ĐẶT ---")
-    print(f"  - Symbol: {symbol}")
-    print(f"  - Loại: {trade_type}")
+    print(f"  - Symbol: {symbol} | Loại: {trade_type}")
     print(f"  - Volume: {request['volume']:.2f} lots")
-    print(f"  - Giá vào: {entry_price:.3f}")
-    print(f"  - Stop Loss: {request['sl']:.3f}")
-    print(f"  - Take Profit: {request['tp']:.3f}")
+    print(f"  - Giá vào: {entry_price:{format_spec}}")
+    print(f"  - Stop Loss: {request['sl']:{format_spec}}")
+    print(f"  - Take Profit: {request['tp']:{format_spec}}")
     print("--------------------------")
     if notifier: notifier.send_message(
         f"<b>[{order_kind}] {trade_type} {symbol}</b>\n"
         f"Lot: {request['volume']:.2f}\n"
-        f"Giá vào: {entry_price:.3f}\n"
-        f"SL: {request['sl']:.3f}\n"
-        f"TP: {request['tp']:.3f}"
+        f"Giá vào: {entry_price:{format_spec}}\n"
+        f"SL: {request['sl']:{format_spec}}\n"
+        f"TP: {request['tp']:{format_spec}}"
     )
     return True
 
-def close_position(position, notifier=None, comment="Closed by bot"):
+def close_position(position, magic_number, notifier=None, comment="Closed by bot"):
     """Đóng một lệnh đang mở."""
     # Đảm bảo kết nối trước khi thực hiện hành động
     if not _ensure_mt5_connection():
@@ -368,7 +373,7 @@ def close_position(position, notifier=None, comment="Closed by bot"):
         "volume": position.volume,
         "type": trade_type,
         "price": price,
-        "magic": 234002,
+        "magic": magic_number,
         "comment": comment,
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
@@ -385,9 +390,51 @@ def close_position(position, notifier=None, comment="Closed by bot"):
         if notifier: notifier.send_message(f"<b>[LỖI] Đóng lệnh #{position.ticket} thất bại!</b>\nLỗi: {result.comment}")
         return False
 
+    # Lấy số digits để định dạng output cho chính xác
+    symbol_info = mt5.symbol_info(position.symbol)
+    digits = symbol_info.digits if symbol_info else 3
+    format_spec = f".{digits}f"
+
     print(f"--- Đóng lệnh #{position.ticket} thành công ---")
-    if notifier: notifier.send_message(f"<b>[ĐÓNG LỆNH] Lệnh #{position.ticket}</b>\nLoại: {'BUY' if position.type == mt5.ORDER_TYPE_BUY else 'SELL'}\nGiá vào: {position.price_open}\nGiá đóng: {price}")
+    if notifier: notifier.send_message(f"<b>[ĐÓNG LỆNH] Lệnh #{position.ticket}</b>\nLoại: {'BUY' if position.type == mt5.ORDER_TYPE_BUY else 'SELL'}\nGiá vào: {position.price_open:{format_spec}}\nGiá đóng: {price:{format_spec}}")
     return True
+
+def cancel_order(order_ticket, symbol, order_type_str, notifier=None):
+    """Hủy một lệnh chờ (pending order)."""
+    if not _ensure_mt5_connection():
+        print("Lỗi: Mất kết nối MT5, không thể hủy lệnh.")
+        return False
+
+    request = {
+        "action": mt5.TRADE_ACTION_REMOVE,
+        "order": order_ticket,
+        "comment": "Cancelled by bot (timeout)"
+    }
+
+    result = mt5.order_send(request)
+
+    if result is None:
+        error_code = mt5.last_error()
+        print(f"Lỗi hủy lệnh chờ #{order_ticket}: mt5.order_send() trả về None.")
+        print(f"Mã lỗi MT5: {error_code[0]} - {error_code[1]}")
+        if notifier:
+            notifier.send_message(f"<b>[LỖI] Hủy lệnh chờ #{order_ticket} thất bại!</b>\nLỗi: {error_code[1]}")
+        return False
+
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        print(f"Lỗi hủy lệnh chờ #{order_ticket}: retcode={result.retcode}, comment={result.comment}")
+        if notifier:
+            notifier.send_message(f"<b>[LỖI] Hủy lệnh chờ #{order_ticket} thất bại!</b>\nLỗi: {result.comment}")
+        return False
+
+    print(f"--- Hủy lệnh chờ #{order_ticket} thành công ---")
+    if notifier:
+        notifier.send_message(
+            f"<b>[HỦY LỆNH CHỜ] Lệnh {order_type_str} {symbol} #{order_ticket}</b>\n"
+            f"Lý do: Lệnh chờ đã tồn tại quá lâu."
+        )
+    return True
+
 
 def calculate_lot_size(symbol, sl_points, risk_percent):
     """
@@ -461,27 +508,30 @@ def calculate_lot_size(symbol, sl_points, risk_percent):
     print(f"Tính toán Lot Size: Balance={balance:.2f}, Risk={risk_percent}%, Risk Amount=${risk_amount:.2f}, SL Distance={sl_points:.2f}, Loss/Lot=${loss_per_lot:.2f}, Calculated Lot={lot_size:.4f}, Final Lot={final_lot_size:.2f}")
     return final_lot_size
 
-def calculate_dynamic_lot_size(symbol, stop_loss_price, trading_params, peak_equity, session_multiplier=1.0):
-    """
-    Tính toán khối lượng lệnh động dựa trên logic phức tạp từ backtester.
-    Bao gồm: % rủi ro, giới hạn rủi ro min/max, giảm rủi ro khi sụt giảm,
-    hệ số nhân theo phiên, và so sánh lot an toàn.
-    """
+def calculate_dynamic_lot_size(symbol, stop_loss_price, trading_params, peak_equity, session_multiplier=1.0, entry_price_override=None):
     if not _ensure_mt5_connection(): return None
 
     account_info = mt5.account_info()
     symbol_info = mt5.symbol_info(symbol)
-    tick = mt5.symbol_info_tick(symbol)
-    if not all([account_info, symbol_info, tick]):
-        print("Lỗi: Không thể lấy thông tin tài khoản, symbol hoặc giá tick.")
+    if not all([account_info, symbol_info]):
+        print("Lỗi: Không thể lấy thông tin tài khoản hoặc symbol.")
         return None
 
     balance = account_info.balance
 
     # Xác định hướng giao dịch và giá vào lệnh dự kiến
     is_buy_trade = stop_loss_price < tick.bid
-    entry_price = tick.ask if is_buy_trade else tick.bid
-
+    if entry_price_override is not None:
+        entry_price = entry_price_override
+        # Xác định lại hướng giao dịch dựa trên giá override
+        is_buy_trade = stop_loss_price < entry_price
+        print(f"Info: Sử dụng giá vào lệnh ghi đè: {entry_price:.3f}")
+    else:
+        tick = mt5.symbol_info_tick(symbol)
+        if not tick:
+            print("Lỗi: Không thể lấy giá tick hiện tại.")
+            return None
+        entry_price = tick.ask if is_buy_trade else tick.bid
     if entry_price <= 0:
         print(f"Lỗi: Giá vào lệnh không hợp lệ ({entry_price}). Bỏ qua tính toán.")
         return None
@@ -492,6 +542,7 @@ def calculate_dynamic_lot_size(symbol, stop_loss_price, trading_params, peak_equ
     max_risk_percent = trading_params.get('max_risk_percent', 4.0)
     drawdown_reducer_tiers = sorted(trading_params.get('drawdown_reducer_tiers', []), key=lambda x: x['threshold_percent'], reverse=True)
     target_sl_distance_points = trading_params.get('target_sl_distance_points', 4.0)
+    min_sl_distance_points = trading_params.get('min_sl_distance_points', 0.5) # Thêm tham số này
     contract_size = symbol_info.trade_contract_size
     min_position_size = symbol_info.volume_min
     max_position_size = symbol_info.volume_max
@@ -519,6 +570,12 @@ def calculate_dynamic_lot_size(symbol, stop_loss_price, trading_params, peak_equ
     strategy_sl_distance_points = abs(entry_price - stop_loss_price)
     if strategy_sl_distance_points <= 0:
         print(f"Lỗi: Khoảng cách SL của chiến lược không hợp lệ ({strategy_sl_distance_points}). Bỏ qua.")
+        return None
+
+    # KIỂM TRA AN TOÀN: Bỏ qua nếu khoảng cách SL quá ngắn so với cấu hình
+    if strategy_sl_distance_points < min_sl_distance_points:
+        print(f"CẢNH BÁO: Khoảng cách SL của chiến lược ({strategy_sl_distance_points:.2f}) nhỏ hơn mức tối thiểu cho phép ({min_sl_distance_points:.2f}). Bỏ qua tín hiệu.")
+        if notifier: notifier.send_message(f"<b>[CẢNH BÁO] Khoảng cách SL quá ngắn. Bỏ qua tín hiệu.</b>")
         return None
 
     # Chọn khoảng cách SL xa hơn giữa SL của chiến lược và SL mục tiêu
@@ -579,7 +636,7 @@ if __name__ == '__main__':
             
             # Thực hiện lệnh BUY 0.01 lot theo yêu cầu
             # SL và TP được đặt ở mức 10 và 20 giá để kiểm tra
-            place_order(symbol=symbol_to_trade, lot=0.01, trade_type="BUY", sl_value=10.0, tp_value=20.0, notifier=None)
+            place_order(symbol=symbol_to_trade, lot=0.01, trade_type="BUY", price=0, sl_value=10.0, tp_value=20.0, magic_number=234002, notifier=None)
             
             mt5.shutdown()
             print("\nĐã ngắt kết nối MT5.")

@@ -8,7 +8,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from src.data_loader import load_csv_data
-from src.config_manager import get_config_for_env
+from src.config_manager import get_config_by_name # Sửa tên hàm import
 from src.analysis import prepare_scalping_data
 from src.backtester import Backtester
 from src.cpr_volume_profile_strategy import CprVolumeProfileStrategy
@@ -23,7 +23,9 @@ def run_final_backtest():
     print("== RUNNING BACKTEST FOR TESTING ENVIRONMENT ==")
     print("="*50 + "\n")
 
-    config = get_config_for_env('testing')
+    # Sửa cách gọi hàm và tên file config
+    # Tên file bây giờ là 'testing_config.json'
+    config = get_config_by_name('testing_config') 
     if not config:
         print("Không thể tải cấu hình. Dừng backtest.")
         return

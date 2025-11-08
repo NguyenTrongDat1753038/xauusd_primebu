@@ -218,6 +218,13 @@ class Backtester:
         # This prevents extremely tight SLs leading to excessively large lot sizes.
         # It ensures that the SL is always at least `min_sl_distance_points` away from the entry price.
         current_sl_distance = abs(entry_price - stop_loss)
+
+        # YÊU CẦU MỚI: Bỏ qua trade nếu SL quá gần theo cấu hình
+        if current_sl_distance < self.min_sl_distance_points:
+            if self.verbose:
+                print(f"[{current_bar.name}] Skipping trade: SL distance ({current_sl_distance:.4f}) is less than required minimum ({self.min_sl_distance_points:.4f}).")
+            return # Bỏ qua, không mở lệnh
+
         if current_sl_distance < self.min_sl_distance_points:
             if self.verbose:
                 print(f"Warning: Calculated SL distance ({current_sl_distance:.4f}) is too small. Adjusting SL to enforce minimum distance ({self.min_sl_distance_points:.2f}).")
@@ -262,36 +269,23 @@ class Backtester:
             if self.verbose:
                 print(f"Info: Session='{session_name}' (x{session_multiplier}). Risk amount clamped to ${risk_amount:.2f} (Min: ${min_risk_amount:.2f}, Max: ${max_risk_amount:.2f})")
             
-            # --- New Logic: Calculate two potential lot sizes and choose the safer one ---
+            # --- Tối ưu hóa logic tính toán Lot Size (giống mt5_connector) ---
+            strategy_sl_distance_points = abs(entry_price - stop_loss)
+            
+            # Chọn khoảng cách SL xa hơn giữa SL của chiến lược và SL mục tiêu để tính lot an toàn hơn
+            effective_sl_distance = max(strategy_sl_distance_points, self.target_sl_distance_points)
+            if self.verbose:
+                print(f"Info: SL chiến lược: {strategy_sl_distance_points:.2f}, SL mục tiêu: {self.target_sl_distance_points:.2f}. Chọn SL hiệu dụng: {effective_sl_distance:.2f} để tính lot.")
 
-            # 1. Lot size based on the strategy's dynamic SL (which might have been adjusted by min_sl_distance_points)
-            strategy_sl_distance = abs(entry_price - stop_loss)
-            lot_from_strategy_sl = risk_amount / (strategy_sl_distance * self.contract_size) if strategy_sl_distance > 0 else float('inf')
+            # Tính toán lot size dựa trên khoảng cách SL an toàn nhất
+            loss_per_lot = effective_sl_distance * self.contract_size
+            raw_position_size = risk_amount / loss_per_lot if loss_per_lot > 0 else 0.0
 
-            # 2. Lot size based on a "target" (safer) SL distance
-            lot_from_target_sl = risk_amount / (self.target_sl_distance_points * self.contract_size)
-
-            # Chọn lot size NHỎ HƠN (an toàn hơn) trong hai trường hợp
-            raw_position_size = min(lot_from_strategy_sl, lot_from_target_sl)
-
-            # Nếu chúng ta chọn lot size từ target SL (tức là nó nhỏ hơn lot size từ SL của chiến lược),
-            # chúng ta phải điều chỉnh SL thực tế để phù hợp với rủi ro đã chọn.
-            if raw_position_size < lot_from_strategy_sl:
-                if self.verbose:
-                    # In ra thông báo rõ ràng hơn về việc điều chỉnh
-                    print(f"Info: Strategy SL ({strategy_sl_distance:.2f}) dẫn đến lot lớn hơn. Sử dụng Target SL ({self.target_sl_distance_points:.2f}) để tính lot an toàn hơn.")
-                    print(f"      Lot từ Strategy SL: {lot_from_strategy_sl:.2f}, Lot từ Target SL: {lot_from_target_sl:.2f}. Chọn lot: {raw_position_size:.2f}.")
-                # Recalculate the SL to match the chosen lot size and risk amount
-                # risk_amount = lot * sl_distance * contract_size  =>  sl_distance = risk_amount / (lot * contract_size)
-                new_sl_distance = risk_amount / (raw_position_size * self.contract_size)
-                if signal == 1: # BUY
-                    final_stop_loss = entry_price - new_sl_distance
-                else: # SELL
-                    final_stop_loss = entry_price + new_sl_distance
+            # Điều chỉnh giá SL cuối cùng nếu cần
+            if effective_sl_distance > strategy_sl_distance_points:
+                final_stop_loss = entry_price - effective_sl_distance if signal == 1 else entry_price + effective_sl_distance
             else:
-                # Nếu lot size từ SL của chiến lược được chọn (vì nó nhỏ hơn hoặc bằng target SL lot),
-                # thì `final_stop_loss` (đã được gán từ `stop_loss` ban đầu) là chính xác.
-                pass
+                final_stop_loss = stop_loss
 
             # Apply min/max position size limits
             position_size = max(self.min_position_size, min(raw_position_size, self.max_position_size))

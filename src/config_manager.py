@@ -2,12 +2,12 @@
 import json
 import os
 
-def get_config_for_env(environment='testing'):
+def get_config_by_name(config_name='testing_config'):
     """
-    Tải và trả về cấu hình từ file JSON tương ứng với môi trường.
+    Tải và trả về cấu hình từ file JSON được chỉ định theo tên.
 
     Args:
-        environment (str): Môi trường cần tải cấu hình ('testing' hoặc 'production').
+        config_name (str): Tên của file cấu hình (không bao gồm .json).
 
     Returns:
         dict: Từ điển chứa cấu hình, hoặc None nếu có lỗi.
@@ -17,14 +17,14 @@ def get_config_for_env(environment='testing'):
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
         # Xây dựng đường dẫn đến file config dựa trên môi trường
-        config_filename = f"{environment}_config.json"
+        config_filename = f"{config_name}.json"
         config_path = os.path.join(project_root, 'configs', config_filename)
 
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
         return config
     except FileNotFoundError as e:
-        print(f"Lỗi: Không tìm thấy file cấu hình cho môi trường '{environment}' tại '{config_path}'.")
+        print(f"Lỗi: Không tìm thấy file cấu hình có tên '{config_name}' tại '{config_path}'.")
         print(f"Chi tiết lỗi: {e}")
         return None
     except json.JSONDecodeError:
@@ -34,5 +34,5 @@ def get_config_for_env(environment='testing'):
         print(f"Lỗi không xác định khi tải cấu hình: {e}")
         return None
 
-# Giữ lại hàm get_config cũ để tương thích ngược (mặc định là testing)
-get_config = get_config_for_env
+# Đổi tên hàm cũ để rõ ràng hơn, nhưng vẫn giữ hàm get_config để tương thích
+get_config = lambda: get_config_by_name('production_config') # Giả sử mặc định là file này

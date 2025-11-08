@@ -3,6 +3,7 @@ import time
 import datetime
 import os
 import sys
+import setproctitle # Import thư viện setproctitle
 import signal
 
 # Thay đổi thư mục làm việc hiện tại thành thư mục gốc của dự án.
@@ -11,9 +12,9 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 os.chdir(project_root)
 sys.path.insert(0, project_root) # Đảm bảo các module của dự án được ưu tiên import
 
-from src.mt5_connector import connect_to_mt5, get_mt5_data, calculate_dynamic_lot_size, place_order, close_position, _ensure_mt5_connection
+from src.mt5_connector import connect_to_mt5, get_mt5_data, calculate_dynamic_lot_size, place_order, close_position, cancel_order, _ensure_mt5_connection
 from src.analysis import prepare_scalping_data
-from src.config_manager import get_config_for_env
+from src.config_manager import get_config_by_name # Sửa import
 from src.telegram_notifier import TelegramNotifier
 from src.evolution_logger import log_trade_context
 from src.cpr_volume_profile_strategy import CprVolumeProfileStrategy
@@ -31,16 +32,144 @@ cooldown_counter = 0
 circuit_breaker_active = False
 peak_equity = 0.0
 
+# Biến toàn cục để kiểm soát vòng lặp chính khi có tín hiệu tắt
+shutdown_requested = False
+stop_signal_file = None # Khởi tạo biến toàn cục
 
 def shutdown_handler(signum, frame):
     """Xử lý việc tắt bot an toàn."""
-    print("\n[!] Đã nhận tín hiệu tắt. Đang đóng các tiến trình..." )
+    global shutdown_requested
+    
+    # Đánh dấu để vòng lặp chính biết cần thoát
+    shutdown_requested = True
+    
+    print("\n[!] Đã nhận tín hiệu tắt (Signal: {}). Đang đóng các tiến trình...".format(signum))
+    
+    try:
+        # Đóng tất cả các lệnh đang mở
+        positions = mt5.positions_get()
+        if positions:
+            print(f"Đóng {len(positions)} lệnh đang mở...")
+            for pos in positions:
+                if pos.magic == 234002:  # magic number của bot
+                    close_position(pos, telegram_notifier, "Bot Shutdown")
+                    time.sleep(1)
+    except:
+        print("Lỗi khi đóng các lệnh mở")
+
+    try:
+        # Hủy tất cả lệnh chờ
+        orders = mt5.orders_get()
+        if orders:
+            print(f"Hủy {len(orders)} lệnh chờ...")
+            for order in orders:
+                if order.magic == 234002:  # magic number của bot
+                    cancel_order(order.ticket, order.symbol, "PENDING", telegram_notifier)
+                    time.sleep(1)
+    except:
+        print("Lỗi khi hủy lệnh chờ")
+    
+    # Gửi thông báo Telegram
     if telegram_notifier:
-        telegram_notifier.send_message("<b>[BOT] Bot đang tắt!</b>")
-        telegram_notifier.stop()
-    mt5.shutdown()
-    print("[*] Đã ngắt kết nối khỏi MetaTrader 5. Tạm biệt!")
-    sys.exit(0)
+        try:
+            msg = "<b>[BOT ĐANG DỪNG]</b>\n"
+            msg += "✅ Đã đóng tất cả các lệnh\n"
+            msg += "✅ Đã hủy tất cả lệnh chờ\n"
+            msg += "⏳ Bot sẽ dừng hoàn toàn trong vài giây..."
+            telegram_notifier.send_message(msg)
+        except:
+            print("Không thể gửi thông báo Telegram khi tắt")
+    
+    # Đóng kết nối MT5
+    try:
+        mt5.shutdown()
+        print("Đã đóng kết nối MT5")
+    except:
+        print("Không thể đóng kết nối MT5")
+    
+    # Set timer để force exit nếu cần
+    def force_exit():
+        time.sleep(15)  # Đợi 15 giây
+        if telegram_notifier:
+            try:
+                telegram_notifier.send_message("<b>[BOT ĐÃ DỪNG]</b>\n❌ Force shutdown do quá thời gian chờ!")
+            except:
+                pass
+        os._exit(1)
+    
+    import threading
+    threading.Thread(target=force_exit, daemon=True).start()
+
+def graceful_sleep(duration):
+    """
+    Một hàm sleep có thể bị ngắt bởi tín hiệu shutdown.
+    Thay thế cho time.sleep() để bot có thể phản hồi ngay lập tức.
+    """
+    global shutdown_requested
+    end_time = time.time() + duration
+    while time.time() < end_time:
+        if shutdown_requested:
+            break # Thoát khỏi sleep nếu có yêu cầu tắt
+        
+        # LOGIC MỚI: Kiểm tra file tín hiệu ngay trong lúc sleep
+        if os.path.exists(stop_signal_file):
+            shutdown_requested = True # Đặt cờ và thoát ngay lập tức
+            break
+        time.sleep(1) # Ngủ từng giây một để kiểm tra cờ và file
+
+def perform_final_shutdown():
+    """Thực hiện các hành động dọn dẹp cuối cùng trước khi thoát."""
+    print("\n=== BẮT ĐẦU QUÁ TRÌNH TẮT BOT ===")
+    
+    # Đóng tất cả các lệnh đang mở nếu được cấu hình
+    try:
+        positions = mt5.positions_get()
+        if positions:
+            print(f"Đang đóng {len(positions)} lệnh đang mở...")
+            for pos in positions:
+                if pos.magic == 234002:  # Chỉ đóng lệnh của bot
+                    close_position(pos, telegram_notifier, "Bot Shutdown")
+                    time.sleep(1)  # Tránh spam lệnh
+    except:
+        print("Không thể đóng các lệnh đang mở")
+    
+    # Hủy tất cả lệnh chờ
+    try:
+        orders = mt5.orders_get()
+        if orders:
+            print(f"Đang hủy {len(orders)} lệnh chờ...")
+            for order in orders:
+                if order.magic == 234002:  # Chỉ hủy lệnh của bot
+                    cancel_order(order.ticket, order.symbol, "PENDING", telegram_notifier)
+                    time.sleep(1)  # Tránh spam lệnh
+    except:
+        print("Không thể hủy các lệnh chờ")
+    
+    # Gửi thông báo cuối cùng và đóng Telegram
+    if telegram_notifier:
+        try:
+            telegram_notifier.send_message("<b>[BOT] Bot đã dừng hoạt động hoàn toàn!</b>")
+            # QUAN TRỌNG: KHÔNG gọi shutdown_sync() nữa vì nó gây treo tiến trình.
+            # Chúng ta sẽ dựa vào os._exit() để tắt mọi thứ một cách cưỡng chế
+            # sau khi đã gửi tin nhắn cuối cùng.
+            time.sleep(2) # Đợi 2 giây để đảm bảo tin nhắn được gửi đi.
+        except Exception as e: # Sửa lỗi: Bắt lỗi cụ thể hơn nếu cần
+            print(f"Không thể gửi thông báo Telegram cuối cùng hoặc tắt notifier: {e}")
+    
+    # Đóng kết nối MT5
+    try:
+        mt5.shutdown()
+        print("[*] Đã ngắt kết nối khỏi MetaTrader 5")
+    except Exception as e: # Sửa lỗi: Bắt lỗi cụ thể hơn
+        print(f"Không thể đóng kết nối MT5: {e}")
+    
+    print("=== KẾT THÚC QUÁ TRÌNH TẮT BOT ===")
+    # SỬ DỤNG os._exit(0) ĐỂ BUỘC THOÁT
+    # Đây là giải pháp cuối cùng để đảm bảo tiến trình kết thúc hoàn toàn,
+    # ngay cả khi các luồng nền của thư viện bên thứ ba (như Telegram) bị treo.
+    # Chúng ta đã hoàn thành tất cả các bước dọn dẹp quan trọng ở trên.
+    print("[!] Buộc thoát tiến trình để đảm bảo bot dừng hoàn toàn.")
+    os._exit(0)
 
 def _get_trade_management_params(trading_params):
     """Helper function to extract all trade management parameters from config."""
@@ -72,7 +201,9 @@ def manage_open_positions(symbol, trading_params, notifier=None):
     params = _get_trade_management_params(trading_params)
 
     for pos in positions:
-        if pos.magic != 234002: 
+        # Lấy magic number từ config để kiểm tra
+        magic_number = trading_params.get('magic_number')
+        if not magic_number or pos.magic != magic_number:
             continue
 
         new_sl = None
@@ -124,7 +255,7 @@ def manage_open_positions(symbol, trading_params, notifier=None):
             final_sl = new_sl if new_sl is not None else pos.sl
             final_tp = new_tp if new_tp is not None else pos.tp
             if final_sl != pos.sl or final_tp != pos.tp:
-                modify_position_sltp(pos.ticket, final_sl, final_tp, notifier, comment_update)
+                modify_position_sltp(pos.ticket, final_sl, final_tp, trading_params, notifier, comment_update)
 
 def modify_position_sltp(position_ticket, new_sl, new_tp, notifier=None, comment=None):
     """Sửa đổi SL/TP của một lệnh đang mở."""
@@ -137,7 +268,8 @@ def modify_position_sltp(position_ticket, new_sl, new_tp, notifier=None, comment
         "position": position_ticket,
         "sl": new_sl,
         "tp": new_tp,
-        "magic": 234002,
+        # Magic number đã được lấy từ trading_params trong hàm gọi
+        "magic": trading_params.get('magic_number'),
     }
     if comment:
         request["comment"] = comment
@@ -152,6 +284,42 @@ def modify_position_sltp(position_ticket, new_sl, new_tp, notifier=None, comment
     print(f"*** Sửa lệnh #{position_ticket} thành công | SL mới: {new_sl:.2f} | TP mới: {new_tp:.2f} | Lý do: {comment} ***")
     if notifier: notifier.send_message(f"<b>[CẬP NHẬT LỆNH] Lệnh #{position_ticket}</b>\nSL mới: {new_sl:.2f}\nTP mới: {new_tp:.2f}\nLý do: {comment}")
     return True
+
+def manage_pending_orders(symbol, trading_params, notifier=None):
+    """
+    Quản lý các lệnh chờ, hủy các lệnh đã tồn tại quá lâu.
+    """
+    pending_orders = mt5.orders_get(symbol=symbol)
+    if pending_orders is None or len(pending_orders) == 0:
+        return
+
+    magic_number = trading_params.get('magic_number')
+    # Lấy thời gian hủy lệnh từ config, mặc định là 4 giờ
+    cancel_after_hours = trading_params.get('cancel_pending_order_hours', 4.0)
+    cancel_after_seconds = cancel_after_hours * 3600
+
+    now_utc_ts = datetime.datetime.now(datetime.UTC).timestamp()
+
+    order_type_map = {
+        mt5.ORDER_TYPE_BUY_LIMIT: "BUY_LIMIT",
+        mt5.ORDER_TYPE_SELL_LIMIT: "SELL_LIMIT",
+        mt5.ORDER_TYPE_BUY_STOP: "BUY_STOP",
+        mt5.ORDER_TYPE_SELL_STOP: "SELL_STOP",
+    }
+
+    for order in pending_orders:
+        # Chỉ kiểm tra các lệnh chờ của bot này
+        if order.magic != magic_number:
+            continue
+
+        order_age_seconds = now_utc_ts - order.time_setup
+        if order_age_seconds > cancel_after_seconds:
+            order_type_str = order_type_map.get(order.type, "UNKNOWN_PENDING")
+            print(f"--- Lệnh chờ #{order.ticket} ({order_type_str}) đã tồn tại {order_age_seconds/3600:.1f} giờ. Đang tiến hành hủy... ---")
+            
+            # Gọi hàm hủy lệnh từ mt5_connector
+            cancel_order(order.ticket, order.symbol, order_type_str, notifier)
+            time.sleep(1) # Chờ một chút sau khi hủy để tránh spam API
 
 def handle_friday_close(symbol, trading_params, notifier=None):
     """Kiểm tra và đóng tất cả các lệnh vào cuối tuần."""
@@ -173,19 +341,41 @@ def handle_friday_close(symbol, trading_params, notifier=None):
         if now_utc.time() >= close_time and not skip_trading_for_weekend:
             print("*** ĐẾN GIỜ ĐÓNG CỬA CUỐI TUẦN ***")
             
-            positions = mt5.positions_get(symbol=symbol)
+            magic_number = trading_params.get('magic_number')
             
+            # --- BƯỚC 1: Đóng tất cả các lệnh đang chạy (positions) ---
+            positions = mt5.positions_get(symbol=symbol)
             if positions is None or len(positions) == 0:
-                print("Không có lệnh nào để đóng.")
+                print("Không có lệnh đang chạy nào để đóng.")
             else:
                 if notifier:
-                    notifier.send_message(f"<b>[THỊ TRƯỜNG ĐÓNG CỬA]</b>\nĐã đến giờ đóng cửa cuối tuần ({close_time_str} UTC). Đang đóng {len(positions)} lệnh...")
+                    notifier.send_message(f"<b>[ĐÓNG CỬA CUỐI TUẦN]</b>\nĐang đóng {len(positions)} lệnh đang chạy...")
                 print(f"Đang đóng {len(positions)} lệnh...")
                 for pos in positions:
-                    if pos.magic == 234002: 
-                        close_position(pos, notifier, comment="Friday EOD Close")
+                    if magic_number and pos.magic == magic_number:
+                        close_position(pos, magic_number, notifier, comment="Friday EOD Close")
                         time.sleep(1)
             
+            # --- BƯỚC 2: Hủy tất cả các lệnh chờ (pending orders) ---
+            pending_orders = mt5.orders_get(symbol=symbol)
+            if pending_orders is None or len(pending_orders) == 0:
+                print("Không có lệnh chờ nào để hủy.")
+            else:
+                # Lọc ra các lệnh chờ của bot này
+                bot_pending_orders = [order for order in pending_orders if magic_number and order.magic == magic_number]
+                if not bot_pending_orders:
+                    print("Không có lệnh chờ nào của bot để hủy.")
+                else:
+                    if notifier:
+                        notifier.send_message(f"<b>[ĐÓNG CỬA CUỐI TUẦN]</b>\nĐang hủy {len(bot_pending_orders)} lệnh chờ...")
+                    print(f"Đang hủy {len(bot_pending_orders)} lệnh chờ...")
+                    order_type_map = { mt5.ORDER_TYPE_BUY_LIMIT: "BUY_LIMIT", mt5.ORDER_TYPE_SELL_LIMIT: "SELL_LIMIT" }
+                    for order in bot_pending_orders:
+                        order_type_str = order_type_map.get(order.type, "PENDING")
+                        cancel_order(order.ticket, order.symbol, order_type_str, notifier)
+                        time.sleep(1) # Tránh spam API
+
+            # --- BƯỚC 3: Đánh dấu đã xử lý và tạm dừng giao dịch ---
             skip_trading_for_weekend = True
             print("Tất cả các lệnh đã được xử lý. Tạm dừng giao dịch cho đến tuần sau.")
             if notifier:
@@ -193,9 +383,41 @@ def handle_friday_close(symbol, trading_params, notifier=None):
 
 def main_trader_loop():
     """Vòng lặp chính để chạy bot."""
-    config = get_config_for_env('production')
+    # Khai báo sử dụng các biến toàn cục để có thể đọc và ghi giá trị của chúng
+    global shutdown_requested, stop_signal_file
+
+    # Đọc tên config từ tham số dòng lệnh, ví dụ: python run_live.py xauusd_prod
+    # --- LOGIC MỚI: Xác định config_name và stop_signal_file ngay từ đầu ---
+    if len(sys.argv) < 2:
+        print("Lỗi: Vui lòng cung cấp tên cấu hình để chạy.")
+        print("Ví dụ: python production/run_live.py xauusd_prod")
+        return
+    config_name = sys.argv[1]
+
+    # Gán giá trị cho stop_signal_file ngay lập tức để tránh lỗi NameError/TypeError
+    stop_signal_file = os.path.join(project_root, f"stop_signal_{config_name}.txt")
+    # Kiểm tra và xóa file tín hiệu cũ nếu tồn tại
+    if os.path.exists(stop_signal_file):
+        print(f"[WARNING] Phát hiện file tín hiệu cũ. Đang xóa: {stop_signal_file}")
+        os.remove(stop_signal_file)
+
+    if len(sys.argv) < 2:
+        print("Lỗi: Vui lòng cung cấp tên cấu hình để chạy.")
+        print("Ví dụ: python production/run_live.py xauusd_prod")
+        return
+    config_name = sys.argv[1]
+
+    # Đặt tên tiến trình để dễ dàng nhận diện trên Task Manager
+    try:
+        process_title = f"{config_name}_bot"
+        setproctitle.setproctitle(process_title)
+        print(f"[*] Đã đặt tên tiến trình thành: {process_title}")
+    except Exception as e:
+        print(f"[CẢNH BÁO] Không thể đặt tên tiến trình: {e}. Đảm bảo thư viện 'setproctitle' đã được cài đặt (pip install setproctitle).")
+
+    config = get_config_by_name(config_name)
     if not config:
-        print("Không thể tải cấu hình. Bot sẽ dừng lại.")
+        print(f"Không thể tải cấu hình '{config_name}'. Bot sẽ dừng lại.")
         return
 
     trading_params = config.get('trading', {})
@@ -219,15 +441,17 @@ def main_trader_loop():
     circuit_breaker_active = False
 
     active_strategy_name = strategy_config.get('active_strategy', 'CprVolumeProfileStrategy')
+    # --- LOGIC MỚI: Xác định khung thời gian chính dựa trên chiến lược ---
     if active_strategy_name == 'CprVolumeProfileStrategy':
         strategy = CprVolumeProfileStrategy(strategy_config.get('CprVolumeProfileStrategy', {}))
         prepare_data_func = prepare_scalping_data
-        main_timeframe_minutes = 5 # This strategy runs on M5
+        # Nếu là EURGBP swing, dùng H1, ngược lại dùng M5 cho scalping
+        main_timeframe_minutes = 60 if 'EURGBP' in trading_params.get('live_symbol') else 5
         required_tfs_for_data = ['m1', 'm5', 'm15', 'h1', 'h4', 'd1']
     elif active_strategy_name == 'M15FilteredScalpingStrategy':
         strategy = M15FilteredScalpingStrategy(strategy_config.get('M15FilteredScalpingStrategy', {}))
         prepare_data_func = prepare_scalping_data
-        main_timeframe_minutes = 5 # This strategy also runs on M5
+        main_timeframe_minutes = 5 # Chiến lược này luôn chạy trên M5
         required_tfs_for_data = ['m1', 'm5', 'm15', 'h1', 'h4', 'd1']
     else:
         print(f"Lỗi: Chiến thuật '{active_strategy_name}' không được hỗ trợ. Bot sẽ dừng lại.")
@@ -235,6 +459,7 @@ def main_trader_loop():
 
     print(f"Đang chạy chiến thuật: {active_strategy_name}")
     
+    print(f"Khung thời gian chính để kiểm tra tín hiệu: {main_timeframe_minutes} phút")
     if telegram_config.get('enabled', False):
         try:
             telegram_notifier = TelegramNotifier(telegram_config.get('bot_token'), telegram_config.get('chat_id'))
@@ -242,10 +467,7 @@ def main_trader_loop():
             print(f"[LỖI] Không thể khởi tạo Telegram Notifier: {e}")
             telegram_notifier = None
     
-    if telegram_notifier:
-        telegram_notifier.send_message(f"<b>[BOT] Bot đã khởi động với chiến thuật: {active_strategy_name}!</b>")
-
-    SYMBOL = trading_params.get('live_symbol', 'XAUUSDm')
+    SYMBOL = trading_params.get('live_symbol') # Lấy từ config
     RISK_PERCENT = trading_params.get('risk_percent', 1.0)
     # Sửa lỗi: Lấy max_open_trades và gán cho cả BUY và SELL nếu không có cấu hình riêng
     MAX_OPEN_TRADES = trading_params.get('max_open_trades', 2)
@@ -256,22 +478,48 @@ def main_trader_loop():
         print(f"Balance hiện tại: ${account_info.balance:,.2f}")
     print(f"Symbol: {SYMBOL} | Rủi ro mỗi lệnh: {RISK_PERCENT}% | Lệnh tối đa: BUY={MAX_BUY_ORDERS}, SELL={MAX_SELL_ORDERS}")
 
+    # Gửi thông báo khởi động chi tiết qua Telegram
+    if telegram_notifier:
+        startup_message = (f"<b>[BOT KHỞI ĐỘNG - {SYMBOL}]</b>\n"
+                           f"Cấu hình: <code>{config_name}</code>\nChiến thuật: {active_strategy_name}")
+        telegram_notifier.send_message(startup_message)
+
     global skip_trading_for_weekend
     now_on_start = datetime.datetime.now(datetime.UTC)
-    if now_on_start.weekday() in [5, 6]:
-        skip_trading_for_weekend = True
-    elif now_on_start.weekday() == 4:
-        close_time_str = trading_params.get('friday_close_time', "21:30:00")
-        close_time = datetime.datetime.strptime(close_time_str, '%H:%M:%S').time()
-        if now_on_start.time() >= close_time:
+    
+    # --- LOGIC MỚI: Chỉ kiểm tra cuối tuần nếu được bật trong config ---
+    # Hợp nhất logic kiểm tra cuối tuần vào một chỗ và tôn trọng cài đặt
+    if trading_params.get('close_on_friday', False):
+        if now_on_start.weekday() in [5, 6]: # Thứ 7, Chủ Nhật
             skip_trading_for_weekend = True
+        elif now_on_start.weekday() == 4: # Thứ 6
+            close_time = datetime.datetime.strptime(trading_params.get('friday_close_time', "21:30:00"), '%H:%M:%S').time()
+            if now_on_start.time() >= close_time:
+                skip_trading_for_weekend = True
 
+    # Đăng ký các trình xử lý tín hiệu để tắt bot một cách an toàn.
+    # SIGINT: Ctrl+C trong terminal.
+    # SIGTERM: Tín hiệu tắt tiêu chuẩn (ít dùng trên Windows).
+    # SIGBREAK: Tín hiệu được gửi bởi `taskkill` (không có /f).
     signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    signal.signal(signal.SIGBREAK, shutdown_handler)
     print("\n--- Bắt đầu vòng lặp giao dịch ---")
     last_trade_time = None
 
-    while True:
+    while not shutdown_requested:
         try:
+            # --- LOGIC MỚI: Kiểm tra file tín hiệu dừng ---
+            if os.path.exists(stop_signal_file):
+                print(f"\n[!] Phát hiện file tín hiệu dừng '{os.path.basename(stop_signal_file)}'. Bắt đầu quá trình tắt bot...")
+                if telegram_notifier:
+                    telegram_notifier.send_message("<b>[BOT]</b> Nhận được tín hiệu dừng từ file.")
+                # Xóa file tín hiệu để tránh kích hoạt lại
+                os.remove(stop_signal_file)
+                # Kích hoạt cờ tắt an toàn
+                shutdown_requested = True
+                continue # Bỏ qua phần còn lại của vòng lặp và đi đến perform_final_shutdown()
+
             now_utc = datetime.datetime.now(datetime.UTC)
             if current_day != now_utc.date():
                 current_day = now_utc.date()
@@ -285,19 +533,20 @@ def main_trader_loop():
             handle_friday_close(SYMBOL, trading_params, telegram_notifier)
             if skip_trading_for_weekend:
                 print(f"[{now_utc.strftime('%Y-%m-%d %H:%M:%S')}] Đang trong thời gian nghỉ cuối tuần. Chờ đến thứ Hai...")
-                time.sleep(3600)
+                graceful_sleep(3600)
                 continue
 
             manage_open_positions(SYMBOL, trading_params, telegram_notifier)
+            manage_pending_orders(SYMBOL, trading_params, telegram_notifier) # THÊM BƯỚC QUẢN LÝ LỆNH CHỜ
 
             cb_config = trading_params.get('circuit_breaker', {})
             if cb_config.get('enabled', False):
                 if circuit_breaker_active:
                     print(f"[{now_utc.strftime('%H:%M:%S')}] Đã đạt giới hạn lỗ hàng ngày. Tạm dừng giao dịch.")
-                    time.sleep(60)
+                    graceful_sleep(60)
                     continue
                 if cooldown_counter > 0:
-                    print(f"[{now_utc.strftime('%H:%M:%S')}] Đang trong thời gian hồi sau chuỗi thua. Bỏ qua tìm tín hiệu. ({cooldown_counter} lượt)")
+                    print(f"[{now_utc.strftime('%Y-%m-%d %H:%M:%S')}] Đang trong thời gian hồi sau chuỗi thua. Bỏ qua tìm tín hiệu. ({cooldown_counter} lượt)")
 
             # --- LOGIC MỚI: Đếm lệnh BUY và SELL (cả đang chạy và chờ) ---
             num_buy_orders = 0
@@ -339,7 +588,7 @@ def main_trader_loop():
             
             if not data_loaded_successfully:
                 print("Thử lại sau 60 giây.")
-                time.sleep(60); continue
+                graceful_sleep(60); continue
 
             analysis_data = prepare_data_func(timeframes_data, strategy_config)
             
@@ -401,73 +650,67 @@ def main_trader_loop():
                     print(f"*** TÍN HIỆU GỐC {trade_type} ĐƯỢC PHÁT HIỆN! ***")
                     
                     if dynamic_sl is not None and dynamic_sl > 0:
-                        current_price = mt5.symbol_info_tick(SYMBOL).ask if trade_type == "BUY" else mt5.symbol_info_tick(SYMBOL).bid
-                        print(f"Giá vào lệnh gốc dự kiến: {current_price:.2f} | SL gốc: {dynamic_sl:.2f} | TP gốc: {dynamic_tp:.2f}")
-                        if current_price > 0:
-                            # --- TÍNH TOÁN LOT SIZE DỰA TRÊN RỦI RO GỐC ---
-                            calculated_lot_size, final_sl = calculate_dynamic_lot_size(
+                        use_new_limit_logic = trading_params.get('use_new_limit_logic', True)
+                        calculated_lot_size = None # Khởi tạo để kiểm tra ở cuối
+
+                        if use_new_limit_logic:
+                            print("--- ÁP DỤNG LOGIC VÀO LỆNH CHỜ MỚI ---")
+                            current_price = mt5.symbol_info_tick(SYMBOL).ask if trade_type == "BUY" else mt5.symbol_info_tick(SYMBOL).bid
+                            if current_price <= 0:
+                                print("Không thể lấy giá thị trường hiện tại. Bỏ qua tín hiệu.")
+                                continue
+
+                            # 1. Xác định các tham số cho lệnh chờ cuối cùng
+                            final_entry_price = dynamic_sl
+                            final_tp_price = dynamic_tp
+                            
+                            original_sl_distance = abs(current_price - dynamic_sl)
+                            target_sl_distance = trading_params.get('target_sl_distance_points', 6.0)
+                            final_sl_distance = max(original_sl_distance, target_sl_distance)
+
+                            if trade_type == "BUY":
+                                final_trade_type = "BUY_LIMIT"
+                                final_sl_price = final_entry_price - final_sl_distance
+                            else: # SELL
+                                final_trade_type = "SELL_LIMIT"
+                                final_sl_price = final_entry_price + final_sl_distance
+
+                            print(f"Giá trị gốc: Entry={current_price:.3f}, SL={dynamic_sl:.3f}, TP={dynamic_tp:.3f}")
+                            print(f"Tính toán mới: SL Distance gốc={original_sl_distance:.3f}, Target SL Distance={target_sl_distance:.3f} => Chọn SL Distance={final_sl_distance:.3f}")
+
+                            # 2. Tính toán lot size DỰA TRÊN các tham số cuối cùng
+                            calculated_lot_size, _ = calculate_dynamic_lot_size(
                                 symbol=SYMBOL,
-                                stop_loss_price=dynamic_sl,
+                                stop_loss_price=final_sl_price, # Truyền vào SL cuối cùng
                                 trading_params=trading_params,
                                 peak_equity=peak_equity,
-                                session_multiplier=session_multiplier
+                                session_multiplier=session_multiplier,
+                                entry_price_override=final_entry_price # Truyền giá vào lệnh chờ để tính toán chính xác
                             )
-                            
-                            if calculated_lot_size is not None and calculated_lot_size > 0:
-                                # --- LOGIC VÀO LỆNH CHỜ (LIMIT ORDER) THEO CÔNG THỨC MỚI ---
-                                use_new_limit_logic = trading_params.get('use_new_limit_logic', True) # Thêm cờ mới vào config nếu cần
 
-                                if use_new_limit_logic:
-                                    print("--- ÁP DỤNG LOGIC VÀO LỆNH CHỜ MỚI ---")
-                                    # Các giá trị gốc từ chiến lược
-                                    original_entry_price = current_price # Giá tại thời điểm có tín hiệu
-                                    original_sl_price = dynamic_sl      # SL gốc từ chiến lược
-                                    original_tp_price = dynamic_tp      # TP gốc từ chiến lược
-
-                                    # 1. Entry mới = SL gốc
-                                    new_entry_price = original_sl_price
-
-                                    # 2. Tính toán SL mới
-                                    # Khoảng cách SL gốc so với giá vào lệnh gốc
-                                    original_sl_distance = abs(original_entry_price - original_sl_price)
-                                    # Lấy target_sl_distance_points từ config, mặc định là 6.0
-                                    target_sl_distance = trading_params.get('target_sl_distance_points', 6.0)
-                                    # Khoảng cách SL mới là giá trị lớn hơn giữa hai khoảng cách trên
-                                    new_sl_distance = max(original_sl_distance, target_sl_distance)
-
-                                    # 3. TP mới = TP gốc
-                                    new_tp_price = original_tp_price
-
-                                    # 4. Tính toán các giá trị cuối cùng và loại lệnh
-                                    if trade_type == "BUY":
-                                        new_trade_type = "BUY_LIMIT"
-                                        # SL mới được tính từ Entry mới
-                                        new_sl_price = new_entry_price - new_sl_distance
-                                    else: # SELL
-                                        new_trade_type = "SELL_LIMIT"
-                                        # SL mới được tính từ Entry mới
-                                        new_sl_price = new_entry_price + new_sl_distance
-                                    
-                                    print(f"Giá trị gốc: Entry={original_entry_price:.2f}, SL={original_sl_price:.2f}, TP={original_tp_price:.2f}")
-                                    print(f"Tính toán mới: SL Distance gốc={original_sl_distance:.2f}, Target SL Distance={target_sl_distance:.2f} => Chọn SL Distance={new_sl_distance:.2f}")
-                                    print(f"Lệnh chờ được đặt: {new_trade_type} | Entry: {new_entry_price:.2f} | SL: {new_sl_price:.2f} | TP: {new_tp_price:.2f} | Lot: {calculated_lot_size:.2f}")
-                                    
-                                    # Đặt lệnh LIMIT với các tham số mới, giữ nguyên lot size đã tính
-                                    place_order(SYMBOL, calculated_lot_size, new_trade_type, new_entry_price, new_sl_price, new_tp_price, telegram_notifier)
-
-                                else:
-                                    print("--- Đặt lệnh thị trường thông thường ---")
-                                    # Đặt lệnh thị trường như bình thường
-                                    place_order(SYMBOL, calculated_lot_size, trade_type, 0, final_sl, dynamic_tp, telegram_notifier)
-
-                                last_trade_time = current_candle_time # Đánh dấu đã xử lý tín hiệu
-                                time.sleep(60) # Chờ 1 phút sau khi đặt lệnh để tránh tín hiệu nhiễu
+                            if calculated_lot_size and calculated_lot_size > 0:
+                                print(f"Lệnh chờ được đặt: {final_trade_type} | Entry: {final_entry_price:.3f} | SL: {final_sl_price:.3f} | TP: {final_tp_price:.3f} | Lot: {calculated_lot_size:.2f}")
+                                place_order(SYMBOL, calculated_lot_size, final_trade_type, final_entry_price, final_sl_price, final_tp_price, trading_params.get('magic_number'), telegram_notifier)
                             else:
                                 print("Không thể tính toán khối lượng lệnh hoặc khối lượng bằng 0. Bỏ qua tín hiệu.")
                                 if telegram_notifier:
                                     telegram_notifier.send_message(f"<b>[BOT] Không thể tính toán khối lượng lệnh hoặc khối lượng bằng 0. Bỏ qua tín hiệu {trade_type}.</b>")
                         else:
-                            print("Không thể lấy giá thị trường hiện tại. Bỏ qua tín hiệu.")
+                            # Logic đặt lệnh thị trường cũ (nếu use_new_limit_logic = false)
+                            print("--- Đặt lệnh thị trường thông thường ---")
+                            # SỬA LỖI: Đảm bảo không truyền entry_price_override cho logic cũ
+                            calculated_lot_size, final_sl = calculate_dynamic_lot_size(
+                                symbol=SYMBOL, stop_loss_price=dynamic_sl, trading_params=trading_params,
+                                peak_equity=peak_equity, session_multiplier=session_multiplier
+                            )
+                            if calculated_lot_size and calculated_lot_size > 0:
+                                place_order(SYMBOL, calculated_lot_size, trade_type, 0, final_sl, dynamic_tp, trading_params.get('magic_number'), telegram_notifier)
+                            else:
+                                print("Không thể tính toán khối lượng lệnh hoặc khối lượng bằng 0. Bỏ qua tín hiệu.")
+
+                        if calculated_lot_size and calculated_lot_size > 0:
+                                last_trade_time = current_candle_time # Đánh dấu đã xử lý tín hiệu
+                                graceful_sleep(60) # Chờ 1 phút sau khi đặt lệnh để tránh tín hiệu nhiễu
                     else:
                         print("Chiến lược không trả về SL động. Bỏ qua tín hiệu để đảm bảo an toàn.")
                         if telegram_notifier:
@@ -488,13 +731,16 @@ def main_trader_loop():
                 sleep_seconds = (next_candle_time - now).total_seconds()
                 print(f"Chờ {sleep_seconds:.0f} giây đến nến tiếp theo (chu kỳ {main_timeframe_minutes} phút)...")
             
-            time.sleep(max(int(sleep_seconds), 5))
+            graceful_sleep(max(int(sleep_seconds), 5))
 
         except Exception as e:
             if telegram_notifier:
                 telegram_notifier.send_message(f"<b>[LỖI NGHIÊM TRỌNG]</b>\nLỗi trong vòng lặp chính của bot: {e}")
             print(f"Lỗi trong vòng lặp chính: {e}")
-            time.sleep(60)
+            graceful_sleep(60)
+    
+    # Sau khi vòng lặp kết thúc (do shutdown_requested = True), thực hiện dọn dẹp
+    perform_final_shutdown()
 
 if __name__ == "__main__":
     main_trader_loop()
