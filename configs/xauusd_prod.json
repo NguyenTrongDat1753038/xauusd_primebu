@@ -24,6 +24,8 @@
     "max_position_size": 1.0,
     "min_sl_distance_points": 0.5,
     "target_sl_distance_points": 4.0,
+    "balance_threshold_for_fixed_lot": 800.0,
+    "fixed_lot_below_threshold": 0.01,
     "use_new_limit_logic": true,
     "use_breakeven_stop": true,
     "breakeven_trigger_points": 5.0,

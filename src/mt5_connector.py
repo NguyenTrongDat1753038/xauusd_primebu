@@ -519,6 +519,21 @@ def calculate_dynamic_lot_size(symbol, stop_loss_price, trading_params, peak_equ
 
     balance = account_info.balance
 
+    # --- LOGIC MỚI: Chia theo số dư tài khoản ---
+    # Lấy ngưỡng và lot size cố định từ config, nếu không có thì dùng giá trị mặc định
+    balance_threshold = trading_params.get('balance_threshold_for_fixed_lot', 800.0)
+    fixed_lot = trading_params.get('fixed_lot_below_threshold', 0.01)
+
+    if balance < balance_threshold:
+        print(f"Cảnh báo: Số dư (${balance:.2f}) thấp hơn ngưỡng (${balance_threshold:.2f}). Sử dụng lot cố định: {fixed_lot}.")
+        # Khi dùng lot cố định, chúng ta vẫn cần trả về giá SL cuối cùng.
+        # Logic này giữ nguyên giá SL từ chiến lược.
+        is_buy_trade_fixed = stop_loss_price < (mt5.symbol_info_tick(symbol).bid if entry_price_override is None else entry_price_override)
+        entry_price_fixed = entry_price_override if entry_price_override is not None else (mt5.symbol_info_tick(symbol).ask if is_buy_trade_fixed else mt5.symbol_info_tick(symbol).bid)
+        final_sl_price = stop_loss_price # Giữ nguyên SL gốc từ chiến lược
+        print(f"Final Calculation (Fixed Lot): Lot Size={fixed_lot:.2f}, Stop Loss Price={final_sl_price:.2f}")
+        return fixed_lot, final_sl_price
+
     # --- SỬA LỖI: Lấy giá tick ngay từ đầu để tránh UnboundLocalError ---
     tick = mt5.symbol_info_tick(symbol)
     if not tick:
