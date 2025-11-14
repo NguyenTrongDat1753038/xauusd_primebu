@@ -1,0 +1,10 @@
+# d:\Code\XAU_Bot_Predict\requirements.txt
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+celery
+redis
+python-dotenv
+requests
+setproctitle

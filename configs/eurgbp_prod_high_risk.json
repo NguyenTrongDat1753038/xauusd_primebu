@@ -1,0 +1,118 @@
+{
+  "mt5_credentials": {
+    "login": 272716800,
+    "password": "Trongdat99@",
+    "server": "Exness-MT5Trial14"
+  },
+  "telegram": {
+    "enabled": true,
+    "bot_token": "8495271991:AAEa6KITp5SRrjjajJORSQdomuqxVaO8lho",
+    "chat_id": "-1002120822708"
+  },
+  "trading": {
+    "live_symbol": "EURGBPm",
+    "magic_number": 234005,
+    "risk_percent": 5.0,
+    "min_risk_percent": 3.0,
+    "max_risk_percent": 7.0,
+    "max_open_trades": 1,
+    "max_buy_orders": 1,
+    "trade_cooldown_seconds": 600,
+    "max_sell_orders": 1,
+    "contract_size": 100000.0,
+    "min_position_size": 0.01,
+    "max_position_size": 2.0,
+    "min_sl_distance_points": 0.00400,
+    "target_sl_distance_points": 0.01200,
+    "balance_threshold_for_fixed_lot": 800.0,
+    "fixed_lot_below_threshold": 0.01,
+    "use_new_limit_logic": true,
+    "reverse_entry_logic": {
+      "enabled": true,
+      "tp_trigger_percent_min": 80.0,
+      "tp_trigger_percent_max": 90.0
+    },
+    "use_breakeven_stop": true,
+    "breakeven_trigger_points": 0.01200,
+    "breakeven_extra_points": 0.00120,
+    "use_trailing_stop": true,
+    "trailing_trigger_step": 0,
+    "trailing_profit_step": 0,
+    "use_tiered_trailing_stop": true,
+    "tiered_trailing_stops": [
+      {
+        "trigger": 0.01200,
+        "sl_add": 0.00120
+      },
+      {
+        "trigger": 0.02400,
+        "sl_add": 0.01200
+      },
+      {
+        "trigger": 0.03600,
+        "sl_add": 0.02400
+      }
+    ],
+    "multi_tier_tp": {
+      "enabled": false,
+      "tiers": []
+    },
+    "cancel_pending_order_hours": 6.0,
+    "use_candlestick_exit": true,
+    "close_on_friday": true,
+    "friday_close_time": "21:30:00",
+    "circuit_breaker": {
+      "enabled": true,
+      "daily_loss_limit_percent": 3.0,
+      "consecutive_loss_limit": 1,
+      "consecutive_loss_cooldown_signals": 5
+    },
+    "time_filter": {
+      "enabled": true,
+      "adx_override_threshold": 35.0,
+      "default_multiplier": 0.5,
+      "sessions": [
+        { "name": "Asian Session", "start_hour": 0, "end_hour": 7, "multiplier": 0.7 },
+        { "name": "London Session", "start_hour": 7, "end_hour": 16, "multiplier": 1.0 },
+        { "name": "New York Session", "start_hour": 12, "end_hour": 21, "multiplier": 1.0 },
+        { "name": "Avoid Overnight", "start_hour": 21, "end_hour": 24, "multiplier": 0.5 }
+      ]
+    }
+  },
+  "strategy": {
+    "active_strategy": "EurgbpSwingStrategy",
+    "EurgbpSwingStrategy": {
+      "ema_fast": 34,
+      "ema_slow": 89,
+      "atr_period": 14,
+      "atr_mult_sl": 1.2,
+      "atr_mult_tp": 3.0,
+      "min_h1_atr": 0.0008,
+      "d1_sideways_threshold": 0.0100,
+      "patterns": {
+        "pin_bar_body_ratio": 0.3,
+        "pin_bar_wick_ratio": 2.0,
+        "engulfing_body_multiplier": 1.5,
+        "engulfing_min_body_ratio": 0.6,
+        "fakey_wick_penetration": 0.7,
+        "fakey_confirmation_bars": 1
+      },
+      "news_filter": {
+        "enabled": true,
+        "avoid_hours_before": 3,
+        "avoid_hours_after": 3,
+        "events": [
+          "BOE_Rate_Decision", "ECB_Rate_Decision", "BOE_MPC_Meeting",
+          "ECB_Press_Conference", "UK_CPI", "EU_CPI", "UK_GDP", "EU_GDP",
+          "UK_PMI", "EU_PMI", "UK_Unemployment", "EU_Unemployment"
+        ]
+      },
+      "exit_logic": {
+        "partial_close_at_tp1": true,
+        "partial_close_percent": 0.5,
+        "trailing_ema_period": 34,
+        "trailing_ema_timeframe": "h1"
+      }
+    }
+  }
+}

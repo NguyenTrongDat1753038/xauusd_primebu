@@ -1,3 +1,296 @@
+# 🤖 TradeBot Hub - Automated Trading System
+
+**A professional, production-ready trading bot system for MetaTrader 5 with web dashboard, real-time bot management, and advanced risk management.**
+
+> **Quick Start**: Run `start_all_services.bat` and open http://localhost:3000
+
+---
+
+## 📋 Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [System Requirements](#system-requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Documentation](#documentation)
+
+---
+
+## ✨ Features
+
+### 🎯 Core Trading
+- **Multi-Strategy Support**: XAUUSD Scalping, EURGBP Swing, BTCUSD Trend, CPR Volume Profile
+- **Advanced Risk Management**:
+  - Dynamic lot sizing based on account balance
+  - Circuit breaker for daily loss limits
+  - Trailing stops (linear & tiered)
+  - Breakeven protection
+- **Real-time Order Management**:
+  - Automatic position scaling
+  - Dynamic SL/TP adjustment
+  - Pending order auto-cancellation
+  - Friday EOD auto-close
+
+### 🖥️ Web Dashboard
+- **Live Bot Control**: Start/Stop bots from browser
+- **Real-time Monitoring**: Status, P&L, win rate, trade count
+- **Trading Logs**: Live stream of bot trades and actions
+- **Process Management**: View, monitor, and kill processes
+- **Reports**: PDF generation with trading statistics
+- **PWA Ready**: Install as app, offline support
+
+### 🔧 Backend System
+- **FastAPI**: High-performance REST API
+- **Celery + Redis**: Async task queue for bot management
+- **WebSocket**: Real-time updates to dashboard
+- **MetaTrader 5 Integration**: Direct API connection
+- **Telegram Notifications**: Instant trade alerts
+
+---
+
+## 🚀 Quick Start
+
+### 1️⃣ Prerequisites
+```powershell
+# Check Python version (must be 3.10+)
+python --version
+
+# Check Node.js (for frontend)
+node --version
+
+# Optional: Install Redis (for bot management)
+docker run -d -p 6379:6379 redis:latest
+```
+
+### 2️⃣ One Command Startup
+```powershell
+# Windows - Run this single command
+start_all_services.bat
+
+# PowerShell (more robust)
+.\start_all_services.ps1
+```
+
+### 3️⃣ Open Dashboard
+Open your browser: **http://localhost:3000**
+
+### 4️⃣ Start Trading
+Click "Start" on any bot card. Done! 🎉
+
+---
+
+## 💻 System Requirements
+
+| Component | Requirement | Notes |
+|-----------|-------------|-------|
+| **OS** | Windows 10/11 | Required for MT5 integration |
+| **Python** | 3.10+ | Recommended: 3.11 LTS |
+| **Node.js** | 16+ | For frontend development |
+| **MetaTrader 5** | Latest | Installed & logged in |
+| **Redis** | 6+ | Optional but recommended (for bot management) |
+| **RAM** | 4GB+ | 2GB minimum, 8GB+ recommended |
+| **Disk** | 2GB+ | For bot logs and data |
+
+---
+
+## 📦 Installation
+
+See [QUICK_START.md](QUICK_START.md) for detailed setup instructions.
+
+### Quick Installation Steps
+
+```powershell
+# 1. Navigate to project
+cd D:\Code\XAU_Bot_Predict
+
+# 2. Activate virtual environment
+.\ta_env\Scripts\activate.bat
+
+# 3. Install dependencies
+pip install -r requirements.txt
+cd frontend && npm install && cd ..
+
+# 4. Setup MT5 Credentials
+# Edit configs/xauusd_prod.json with your MT5 login details
+
+# 5. Start everything
+start_all_services.bat
+```
+
+---
+
+## 🎮 Usage
+
+### Via Web Dashboard (Recommended)
+1. Open http://localhost:3000
+2. **Dashboard Tab**: View all bots, click Start/Stop
+3. **Bots Tab**: Monitor processes and logs
+4. **Reports Tab**: Generate & download trading reports
+5. **Remote Tab**: Server info and remote control
+6. **Settings Tab**: Configure MT5 credentials
+
+### Via Command Line
+```powershell
+# Start specific bot
+python production/run_live.py xauusd_prod
+
+# Check bot status
+check_bot_status.bat
+
+# Stop all bots
+stop_bot.bat
+```
+
+---
+
+## ⚙️ Configuration
+
+### Bot Profiles
+Located in `configs/`:
+- `xauusd_prod.json` - Gold scalping (M1 timeframe)
+- `eurgbp_prod.json` - Conservative swing (H1, low risk)
+- `eurgbp_prod_high_risk.json` - Aggressive swing (H1, high risk)
+- `btcusd_prod.json` - Trend following (H4)
+
+### MT5 Credentials
+Edit in `configs/<bot>.json`:
+```json
+{
+  "mt5_credentials": {
+    "login": 272716800,
+    "password": "your_password",
+    "server": "Exness-MT5Trial14"
+  },
+  ...
+}
+```
+
+### Telegram Notifications
+```json
+{
+  "telegram": {
+    "enabled": true,
+    "bot_token": "YOUR_BOT_TOKEN",
+    "chat_id": "YOUR_CHAT_ID"
+  }
+}
+```
+
+---
+
+## 🧪 Testing & Verification
+
+```powershell
+# Health check
+check_bot_status.bat
+
+# Test APIs
+curl http://localhost:8000/docs          # Swagger UI
+curl http://localhost:3000               # Frontend
+
+# Test Redis
+redis-cli ping
+
+# View logs
+# Check terminal windows for real-time logs
+```
+
+---
+
+## ⚠️ Troubleshooting
+
+### "Redis not found" Error
+See [REDIS_SETUP.md](REDIS_SETUP.md) for setup options:
+```powershell
+docker run -d -p 6379:6379 redis:latest  # Docker (easiest)
+wsl redis-server                          # WSL
+setup_redis.bat                           # Interactive helper
+```
+
+### Bot won't start from dashboard
+1. Check Celery Worker is running (2nd terminal)
+2. Check Redis is running: `redis-cli ping`
+3. View Celery logs for errors
+4. Try manual: `python production/run_live.py xauusd_prod`
+
+### Port already in use
+```powershell
+# Find and kill process using port
+netstat -ano | findstr :3000
+taskkill /PID <PID> /F
+```
+
+See [BOT_START_GUIDE.md](BOT_START_GUIDE.md) for detailed troubleshooting.
+
+---
+
+## 📚 Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [QUICK_START.md](QUICK_START.md) | Complete setup & configuration guide |
+| [BOT_START_GUIDE.md](BOT_START_GUIDE.md) | Troubleshoot bot startup issues |
+| [REDIS_SETUP.md](REDIS_SETUP.md) | Redis installation options |
+
+---
+
+## 📁 Project Structure
+
+```
+XAU_Bot_Predict/
+├── app/                          # FastAPI backend
+│   ├── main.py                   # Application entry
+│   └── routers/
+│       └── bots.py              # Bot control API
+├── frontend/                      # Express.js + Alpine.js dashboard
+│   ├── server.js                # Express server
+│   ├── index.html               # Main UI
+│   └── package.json
+├── production/
+│   └── run_live.py              # Bot trading engine
+├── tasks/
+│   ├── bot_tasks.py             # Celery tasks
+│   └── celery_worker.py         # Celery config
+├── configs/                       # Bot configuration files
+├── src/                          # Bot strategies & utilities
+├── ta_env/                       # Python virtual environment
+├── start_all_services.bat        # 🚀 Start everything
+├── start_all_services.ps1        # PowerShell version
+├── setup_redis.bat               # Redis setup helper
+└── check_bot_status.bat          # Check running bots
+```
+
+---
+
+## 🎓 Key Technologies
+
+- **Backend**: FastAPI, Celery, Redis
+- **Frontend**: Express.js, Alpine.js, Tailwind CSS, DaisyUI
+- **Trading**: MetaTrader 5 Python API
+- **Database**: Redis (in-memory cache)
+- **Documentation**: Swagger/OpenAPI
+
+---
+
+## 📞 Support & Troubleshooting
+
+1. **Check Logs**: View output in terminal windows
+2. **Run Health Check**: `check_bot_status.bat`
+3. **View Errors**: Browser Console (F12) or terminal logs
+4. **Enable Debug**: Set log level to DEBUG in config
+5. **See Documentation**: Check relevant .md files above
+
+---
+
+## 📝 Original Documentation
+
+For detailed technical information about bot strategies, see original README below:
+
+---
+
 # Bot Giao Dịch Tự Động cho MetaTrader 5
 
 Bot này được thiết kế để thực hiện các chiến lược giao dịch một cách tự động trên nền tảng MetaTrader 5 (MT5). Nó có khả năng chạy nhiều chiến lược khác nhau, quản lý rủi ro linh hoạt, và gửi thông báo theo thời gian thực qua Telegram.

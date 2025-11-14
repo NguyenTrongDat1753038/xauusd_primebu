@@ -12,36 +12,84 @@
   "trading": {
     "live_symbol": "XAUUSDm",
     "magic_number": 234002,
-    "risk_percent": 1.5,
+    "risk_percent": 0.75,
     "min_risk_percent": 0.25,
-    "max_risk_percent": 3.0,
-    "max_open_trades": 2,
-    "max_buy_orders": 2,
-    "max_sell_orders": 2,
+    "max_risk_percent": 1.0,
+    "max_open_trades": 8,
+    "max_buy_orders": 5,
+    "trade_cooldown_seconds": 300,
+    "max_sell_orders": 5,
     "contract_size": 100.0,
     "default_position_size": 0.01,
     "min_position_size": 0.01,
     "max_position_size": 1.0,
-    "min_sl_distance_points": 0.5,
-    "target_sl_distance_points": 4.0,
+    "min_sl_distance_points": 3.5,
+    "target_sl_distance_points": 6.0,
     "balance_threshold_for_fixed_lot": 800.0,
     "fixed_lot_below_threshold": 0.01,
     "use_new_limit_logic": true,
-    "use_breakeven_stop": true,
-    "breakeven_trigger_points": 5.0,
-    "breakeven_extra_points": 0.5,
-    "use_atr_based_breakeven": false,
-    "breakeven_atr_trigger_multiplier": 1.0,
-    "use_trailing_stop": false,
-    "trailing_trigger_step": 5.0,
-    "trailing_profit_step": 1.0,
-    "use_tiered_trailing_stop": false,
-    "tiered_trailing_stops": [],
-    "multi_tier_tp": {
+    "reverse_entry_logic": {      
       "enabled": false,
-      "tiers": []
+      "tp_trigger_percent_min": 80.0,
+      "tp_trigger_percent_max": 90.0
     },
-    "cancel_pending_order_hours": 4.0,
+    "use_breakeven_stop": true,
+    "breakeven_trigger_points": 4,
+    "breakeven_extra_points": 0.25,
+    "use_atr_based_breakeven": true,
+    "breakeven_atr_trigger_multiplier": 1.0,
+    "use_trailing_stop": true,
+    "trailing_trigger_step": 0,
+    "trailing_profit_step": 0,
+    "use_tiered_trailing_stop": true,
+    "tiered_trailing_stops": [
+      {
+        "trigger": 3.75,
+        "sl_add": 0.25
+      },
+      {
+        "trigger": 10.0,
+        "sl_add": 2.0
+      },
+      {
+        "trigger": 15.0,
+        "sl_add": 3.0
+      },
+      {
+         "trigger": 20.0,
+        "sl_add": 8.0
+      },
+       {
+         "trigger": 30.0,
+        "sl_add": 20.0
+      },
+       {
+         "trigger": 40.0,
+        "sl_add": 30.0
+      },
+       {
+         "trigger": 50.0,
+        "sl_add": 40.0
+      }
+    ],
+    "multi_tier_tp": {
+      "enabled": true,
+      "tiers": [
+        {
+          "tp_atr_multiplier": 1.5,
+          "close_percent": 25
+        },
+        {
+          "tp_atr_multiplier": 2.5,
+          "close_percent": 50
+        },
+        {
+          "tp_atr_multiplier": 3.75,
+          "close_percent": 25
+        }
+      ]
+    },
+    "cancel_pending_order_hours": 2.0,
     "use_candlestick_exit": true,
     "close_on_friday": true,
     "friday_close_time": "21:30:00",
@@ -56,11 +104,10 @@
       "adx_override_threshold": 35.0,
       "default_multiplier": 0.5,
       "sessions": [
-        { "name": "Asian Session", "start_hour": 0, "end_hour": 7, "multiplier": 0.7 },
-        { "name": "London Session", "start_hour": 7, "end_hour": 16, "multiplier": 1.0 },
-        { "name": "New York Session", "start_hour": 12, "end_hour": 21, "multiplier": 1.0 },
-        { "name": "Avoid Overnight", "start_hour": 21, "end_hour": 24, "multiplier": 0.5 },
-        { "name": "Avoid Overnight", "start_hour": 0, "end_hour": 0, "multiplier": 0.5 }
+        { "name": "Asian Session", "start_hour": 23, "end_hour": 7, "multiplier": 1.0 },
+        { "name": "London Session", "start_hour": 7, "end_hour": 15, "multiplier": 1.0 },
+        { "name": "New York Session", "start_hour": 15, "end_hour": 22, "multiplier": 1.0 },
+        { "name": "Session Break", "start_hour": 22, "end_hour": 23, "multiplier": 0.0 }
       ]
     }
   },
@@ -70,6 +117,14 @@
       "adx_length": 14,
       "adx_trend_threshold": 25,
       "adx_range_threshold": 20,
+      "htf_trend_score_threshold": 2,
+      "volume_filter_enabled": true,
+      "volume_ma_period": 20,
+      "volume_factor": 0.8,
+      "m15_rsi_filter_enabled": true,
+      "m15_rsi_period": 14,
+      "m15_rsi_ob": 70,
+      "m15_rsi_os": 30,
       "CombinedScalpingStrategy": {
         "required_votes": 1,
         "use_candle_vote": true,

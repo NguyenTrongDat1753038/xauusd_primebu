@@ -1,4 +1,4 @@
-
+# -*- coding: utf-8 -*-
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
@@ -349,8 +349,10 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
 
         if poc_list:
             poc_df = pd.concat(poc_list)
-            merged_df = merged_df.join(poc_df)
-
+            # SỬA LỖI: Chỉ join nếu poc_df không rỗng
+            if not poc_df.empty:
+                merged_df = merged_df.join(poc_df)
+                merged_df['POC'].ffill(inplace=True) # Forward fill để lấp các giá trị thiếu
 
 
     # Lấy tham số từ config
@@ -387,13 +389,14 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
         h1_ema_200 = ta.ema(merged_df['CLOSE_H1'], length=200)
         merged_df['H1_EMA_34'] = ta.ema(merged_df['CLOSE_H1'], length=34)
         merged_df['H1_EMA_89'] = ta.ema(merged_df['CLOSE_H1'], length=89)
+        merged_df['H1_ATR_14'] = ta.atr(high=merged_df['HIGH_H1'], low=merged_df['LOW_H1'], close=merged_df['CLOSE_H1'], length=14)
         merged_df['H1_TREND'] = np.where(merged_df['CLOSE_H1'] > h1_ema_200, 1, -1)
 
-    if 'CLOSE_H4' in merged_df.columns:
-        h4_ema_200 = ta.ema(merged_df['CLOSE_H4'], length=200)
-        merged_df['H4_EMA_34'] = ta.ema(merged_df['CLOSE_H4'], length=34)
-        merged_df['H4_EMA_89'] = ta.ema(merged_df['CLOSE_H4'], length=89)
-        merged_df['H4_TREND'] = np.where(merged_df['CLOSE_H4'] > h4_ema_200, 1, -1)
+    if 'CLOSE_D1' in merged_df.columns:
+        d1_ema_200 = ta.ema(merged_df['CLOSE_D1'], length=200)
+        merged_df['D1_EMA_34'] = ta.ema(merged_df['CLOSE_D1'], length=34)
+        merged_df['D1_EMA_89'] = ta.ema(merged_df['CLOSE_D1'], length=89)
+        merged_df['D1_TREND'] = np.where(merged_df['CLOSE_D1'] > d1_ema_200, 1, -1)
         
     # --- BỔ SUNG TÍNH TOÁN ADX CHO M15 FILTER ---
     # Lấy adx_length từ config, nếu không có thì lấy trong M15FilteredScalpingStrategy, mặc định là 14
@@ -419,9 +422,11 @@ def prepare_scalping_data(timeframes_data: Dict[str, pd.DataFrame], strategy_par
     # --- 3. Dọn dẹp dữ liệu ---
     # Giữ lại các cột OHLC của M1 (gốc) và M5 (cho tính toán scalping)
     # Xóa các cột OHLC không cần thiết khác để làm sạch
-    cols_to_drop = [col for col in merged_df.columns if any(s in col for s in ['OPEN_', 'HIGH_', 'LOW_', 'CLOSE_', 'VOLUME_']) and not any(s in col for s in ['_M5'])]
+    # SỬA LỖI: Giữ lại các cột của M15 vì chúng cần thiết cho việc tính toán chỉ báo của chiến lược (ví dụ ADX_M15).
+    # Chỉ xóa các cột của H1, H4, D1, v.v.
+    cols_to_drop = [col for col in merged_df.columns if any(s in col for s in ['OPEN_', 'HIGH_', 'LOW_', 'CLOSE_', 'VOLUME_']) and not any(s in col for s in ['_M5', '_M15'])]
     # Giữ lại các cột gốc của M1 không có hậu tố
-    cols_to_drop = [c for c in cols_to_drop if c not in ['OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME']]
+    # cols_to_drop = [c for c in cols_to_drop if c not in ['OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME']] # Dòng này không cần thiết và có thể gây lỗi
     merged_df.drop(columns=cols_to_drop, inplace=True, errors='ignore')
 
     merged_df.dropna(inplace=True)

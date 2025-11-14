@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #00ff00;
+        }
+        button {
+            background: #00c853;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            cursor: pointer;
+            margin: 5px;
+        }
+        pre {
+            background: #0a0a0a;
+            padding: 10px;
+            border: 1px solid #00c853;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧪 TradeBot API Test</h1>
+    
+    <div>
+        <button onclick="testGetBots()">GET /api/v1/bots</button>
+        <button onclick="testStartBot()">POST /api/v1/bots/start (eurgbp)</button>
+        <button onclick="testStopBot()">POST /api/v1/bots/stop (eurgbp)</button>
+    </div>
+    
+    <h2>Response:</h2>
+    <pre id="output">Click a button to test...</pre>
+    
+    <script>
+        const API_BASE = 'http://localhost:8001/api/v1';
+        const output = document.getElementById('output');
+        
+        async function testGetBots() {
+            try {
+                output.textContent = 'Loading...';
+                const response = await fetch(`${API_BASE}/bots`);
+                const data = await response.json();
+                output.textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                output.textContent = `ERROR: ${error.message}`;
+            }
+        }
+        
+        async function testStartBot() {
+            try {
+                output.textContent = 'Starting eurgbp...';
+                const response = await fetch(`${API_BASE}/bots/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bot_id: 'eurgbp' })
+                });
+                const data = await response.json();
+                output.textContent = JSON.stringify(data, null, 2);
+                
+                // Refresh status after 2 seconds
+                setTimeout(testGetBots, 2000);
+            } catch (error) {
+                output.textContent = `ERROR: ${error.message}`;
+            }
+        }
+        
+        async function testStopBot() {
+            try {
+                output.textContent = 'Stopping eurgbp...';
+                const response = await fetch(`${API_BASE}/bots/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bot_id: 'eurgbp' })
+                });
+                const data = await response.json();
+                output.textContent = JSON.stringify(data, null, 2);
+                
+                // Refresh status after 2 seconds
+                setTimeout(testGetBots, 2000);
+            } catch (error) {
+                output.textContent = `ERROR: ${error.message}`;
+            }
+        }
+        
+        // Auto-load on page load
+        window.onload = testGetBots;
+    </script>
+</body>
+</html>

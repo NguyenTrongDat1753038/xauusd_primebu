@@ -8,7 +8,7 @@ def analyze_performance():
     # --- 1. Load Data ---
     # Đường dẫn tương đối đến file kết quả trong thư mục 'reports'
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    results_file = os.path.join(project_root, 'reports', 'backtest_results_OPTIMIZED.csv')
+    results_file = os.path.join(project_root, 'reports', 'backtest_results_xauusd_prod.csv')
     
     # Check if file exists
     if not os.path.exists(results_file):

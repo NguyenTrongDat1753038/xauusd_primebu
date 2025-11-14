@@ -33,6 +33,7 @@ class TelegramNotifier:
         self.application = None
         self._loop = None
         self._loop_thread = None
+        self._app_ready = threading.Event()  # Signal when app is fully initialized
 
         # Try to initialize PTB Application and start it on a dedicated loop thread
         if PTB_AVAILABLE:
@@ -45,15 +46,21 @@ class TelegramNotifier:
                 def _run_loop():
                     asyncio.set_event_loop(self._loop)
                     # start the application (job queue and bot become available)
+                    # SỬA LỖI: Với python-telegram-bot v20+, cần gọi initialize() trước khi start()
                     try:
-                        self._loop.run_until_complete(self.application.start())
+                        async def start_app():
+                            await self.application.initialize()
+                            await self.application.start()
+                            self._app_ready.set()  # Signal that app is ready
+                        
+                        self._loop.run_until_complete(start_app())
                     except Exception as e:
                         print(f"[Telegram] Error while starting Application: {e}")
                     # Keep loop running to process job queue
                     try:
                         self._loop.run_forever()
                     finally:
-                        # best-effort shutdown
+                        # Cố gắng shutdown một cách tốt nhất
                         try:
                             self._loop.run_until_complete(self.application.shutdown())
                         except Exception:
@@ -61,9 +68,11 @@ class TelegramNotifier:
 
                 self._loop_thread = threading.Thread(target=_run_loop, daemon=True)
                 self._loop_thread.start()
-                # small delay to allow application.start() to run
-                time.sleep(0.3)
-                print("[Telegram] Notifier initialized (PTB mode).")
+                # Wait for application to be ready (with timeout)
+                if self._app_ready.wait(timeout=3):
+                    print("[Telegram] Notifier initialized (PTB mode).")
+                else:
+                    print("[Telegram] PTB Application startup timed out, will use HTTP fallback if needed.")
             except Exception as e:
                 print(f"[Telegram] Failed to start PTB Application: {e}. Falling back to HTTP mode.")
                 self.application = None
@@ -86,12 +95,24 @@ class TelegramNotifier:
         """
         # Use PTB job queue if it's running
         try:
-            if self.application and self._loop and self.application.job_queue and self.application.running:
-                # schedule the job on the running job queue
-                self.application.job_queue.run_once(self._send_job, 0, data=message)
-                return True
+            if self.application and self._loop and self._app_ready.is_set():
+                if self.application.job_queue and self.application.running:
+                    # schedule the job on the running job queue
+                    self.application.job_queue.run_once(self._send_job, 0, data=message)
+                    return True
         except Exception as e:
             print(f"[Telegram] PTB job queue send failed: {e}")
+
+        # If PTB mode is configured but not ready yet, give it one more chance
+        if self.application and not self._app_ready.is_set():
+            print(f"[Telegram] Waiting for PTB Application to initialize...")
+            if self._app_ready.wait(timeout=1):
+                try:
+                    if self.application.job_queue and self.application.running:
+                        self.application.job_queue.run_once(self._send_job, 0, data=message)
+                        return True
+                except Exception as e:
+                    print(f"[Telegram] Second PTB attempt failed: {e}")
 
         # Fallback: direct HTTP send via Bot API
         try:

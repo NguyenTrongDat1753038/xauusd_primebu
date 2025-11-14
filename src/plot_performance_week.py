@@ -11,7 +11,7 @@ def plot_performance_charts_weekly(initial_balance=10000):
 
     # --- 1. Tải dữ liệu ---
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    results_file = os.path.join(project_root, 'reports', 'backtest_results_TEST.csv')
+    results_file = os.path.join(project_root, 'reports', 'backtest_results_xauusd_prod.csv')
 
     if not os.path.exists(results_file):
         print(f"Lỗi: Không tìm thấy file kết quả tại '{results_file}'")

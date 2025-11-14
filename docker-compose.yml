@@ -1,0 +1,91 @@
+services:
+  # Redis Service
+  redis:
+    image: redis:7-alpine
+    container_name: xau-bot-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - bot-network
+    restart: unless-stopped
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: xau-bot-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+      - ./tasks:/app/tasks
+      - ./configs:/app/configs
+      - ./src:/app/src
+    networks:
+      - bot-network
+    restart: unless-stopped
+
+  # Celery Worker
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: xau-bot-celery
+    command: celery -A tasks.celery_worker worker --loglevel=info
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+      - ./tasks:/app/tasks
+      - ./configs:/app/configs
+      - ./src:/app/src
+      - ./production:/app/production
+    networks:
+      - bot-network
+    restart: unless-stopped
+
+  # Frontend (Optional - if you want to containerize it)
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   container_name: xau-bot-frontend
+  #   ports:
+  #     - "3000:3000"
+  #   depends_on:
+  #     - backend
+  #   networks:
+  #     - bot-network
+  #   restart: unless-stopped
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  bot-network:
+    driver: bridge
